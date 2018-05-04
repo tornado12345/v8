@@ -11,7 +11,7 @@
 #include "src/conversions.h"
 #include "src/handles-inl.h"
 #include "src/isolate.h"
-#include "src/list-inl.h"
+#include "src/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -152,7 +152,7 @@ Object* FutexEmulation::Wait(Isolate* isolate,
     mutex_.Pointer()->Lock();
 
     if (node->interrupted_) {
-      // An interrupt occured while the mutex_ was unlocked. Don't wait yet.
+      // An interrupt occurred while the mutex_ was unlocked. Don't wait yet.
       continue;
     }
 
@@ -170,7 +170,7 @@ Object* FutexEmulation::Wait(Isolate* isolate,
       }
 
       base::TimeDelta time_until_timeout = timeout_time - current_time;
-      DCHECK(time_until_timeout.InMicroseconds() >= 0);
+      DCHECK_GE(time_until_timeout.InMicroseconds(), 0);
       bool wait_for_result =
           node->cond_.WaitFor(mutex_.Pointer(), time_until_timeout);
       USE(wait_for_result);
@@ -187,10 +187,9 @@ Object* FutexEmulation::Wait(Isolate* isolate,
   return result;
 }
 
-
 Object* FutexEmulation::Wake(Isolate* isolate,
                              Handle<JSArrayBuffer> array_buffer, size_t addr,
-                             int num_waiters_to_wake) {
+                             uint32_t num_waiters_to_wake) {
   DCHECK(addr < NumberToSize(array_buffer->byte_length()));
 
   int waiters_woken = 0;
@@ -202,7 +201,9 @@ Object* FutexEmulation::Wake(Isolate* isolate,
     if (backing_store == node->backing_store_ && addr == node->wait_addr_) {
       node->waiting_ = false;
       node->cond_.NotifyOne();
-      --num_waiters_to_wake;
+      if (num_waiters_to_wake != kWakeAll) {
+        --num_waiters_to_wake;
+      }
       waiters_woken++;
     }
 

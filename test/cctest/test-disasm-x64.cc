@@ -33,11 +33,13 @@
 #include "src/debug/debug.h"
 #include "src/disasm.h"
 #include "src/disassembler.h"
+#include "src/frames-inl.h"
 #include "src/macro-assembler.h"
+#include "src/objects-inl.h"
 #include "test/cctest/cctest.h"
 
-using namespace v8::internal;
-
+namespace v8 {
+namespace internal {
 
 #define __ assm.
 
@@ -45,14 +47,13 @@ using namespace v8::internal;
 static void DummyStaticFunction(Object* result) {
 }
 
-
 TEST(DisasmX64) {
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
   v8::internal::byte buffer[8192];
   Assembler assm(isolate, buffer, sizeof buffer);
-  DummyStaticFunction(NULL);  // just bloody use it (DELETE; debugging)
+  DummyStaticFunction(nullptr);  // just bloody use it (DELETE; debugging)
 
   // Short immediate instructions
   __ addq(rax, Immediate(12345678));
@@ -265,6 +266,7 @@ TEST(DisasmX64) {
   __ xorq(rdx, Immediate(12345));
   __ xorq(rdx, Operand(rbx, rcx, times_8, 10000));
   __ bts(Operand(rbx, rcx, times_8, 10000), rdx);
+  __ pshufw(xmm5, xmm1, 3);
   __ hlt();
   __ int3();
   __ ret(0);
@@ -282,7 +284,7 @@ TEST(DisasmX64) {
   // TODO(mstarzinger): The following is protected.
   // __ call(Operand(rbx, rcx, times_4, 10000));
   __ nop();
-  Handle<Code> ic(CodeFactory::LoadIC(isolate).code());
+  Handle<Code> ic = BUILTIN_CODE(isolate, LoadIC);
   __ call(ic, RelocInfo::CODE_TARGET);
   __ nop();
   __ nop();
@@ -290,9 +292,6 @@ TEST(DisasmX64) {
   __ jmp(&L1);
   // TODO(mstarzinger): The following is protected.
   // __ jmp(Operand(rbx, rcx, times_4, 10000));
-  ExternalReference after_break_target =
-      ExternalReference::debug_after_break_target_address(isolate);
-  USE(after_break_target);
   __ jmp(ic, RelocInfo::CODE_TARGET);
   __ nop();
 
@@ -386,6 +385,11 @@ TEST(DisasmX64) {
     __ cvtsd2ss(xmm0, xmm1);
     __ cvtsd2ss(xmm0, Operand(rbx, rcx, times_4, 10000));
     __ movaps(xmm0, xmm1);
+    __ movdqa(xmm0, Operand(rsp, 12));
+    __ movdqa(Operand(rsp, 12), xmm0);
+    __ movdqu(xmm0, Operand(rsp, 12));
+    __ movdqu(Operand(rsp, 12), xmm0);
+    __ shufps(xmm0, xmm9, 0x0);
 
     // logic operation
     __ andps(xmm0, xmm1);
@@ -408,6 +412,8 @@ TEST(DisasmX64) {
     __ maxss(xmm1, Operand(rbx, rcx, times_4, 10000));
     __ minss(xmm1, xmm0);
     __ minss(xmm1, Operand(rbx, rcx, times_4, 10000));
+    __ sqrtss(xmm1, xmm0);
+    __ sqrtss(xmm1, Operand(rbx, rcx, times_4, 10000));
     __ addps(xmm1, xmm0);
     __ addps(xmm1, Operand(rbx, rcx, times_4, 10000));
     __ subps(xmm1, xmm0);
@@ -449,6 +455,8 @@ TEST(DisasmX64) {
     __ minsd(xmm1, Operand(rbx, rcx, times_4, 10000));
     __ maxsd(xmm1, xmm0);
     __ maxsd(xmm1, Operand(rbx, rcx, times_4, 10000));
+    __ sqrtsd(xmm1, xmm0);
+    __ sqrtsd(xmm1, Operand(rbx, rcx, times_4, 10000));
     __ ucomisd(xmm0, xmm1);
 
     __ andpd(xmm0, xmm1);
@@ -468,6 +476,9 @@ TEST(DisasmX64) {
     __ punpckldq(xmm1, xmm11);
     __ punpckldq(xmm5, Operand(rdx, 4));
     __ punpckhdq(xmm8, xmm15);
+
+    __ pshuflw(xmm2, xmm4, 3);
+    __ pshufhw(xmm1, xmm9, 6);
 
 #define EMIT_SSE2_INSTR(instruction, notUsed1, notUsed2, notUsed3) \
   __ instruction(xmm5, xmm1);                                      \
@@ -500,6 +511,8 @@ TEST(DisasmX64) {
   {
     if (CpuFeatures::IsSupported(SSE3)) {
       CpuFeatureScope scope(&assm, SSE3);
+      __ haddps(xmm1, xmm0);
+      __ haddps(xmm1, Operand(rbx, rcx, times_4, 10000));
       __ lddqu(xmm1, Operand(rdx, 4));
     }
   }
@@ -520,6 +533,8 @@ TEST(DisasmX64) {
       CpuFeatureScope scope(&assm, SSE4_1);
       __ insertps(xmm5, xmm1, 123);
       __ extractps(rax, xmm1, 0);
+      __ pextrw(rbx, xmm2, 1);
+      __ pinsrw(xmm2, rcx, 1);
       __ pextrd(rbx, xmm15, 0);
       __ pextrd(r12, xmm0, 1);
       __ pinsrd(xmm9, r9, 0);
@@ -603,6 +618,8 @@ TEST(DisasmX64) {
       __ vminss(xmm9, xmm1, Operand(rbx, rcx, times_8, 10000));
       __ vmaxss(xmm8, xmm1, xmm2);
       __ vmaxss(xmm9, xmm1, Operand(rbx, rcx, times_1, 10000));
+      __ vsqrtss(xmm8, xmm1, xmm2);
+      __ vsqrtss(xmm9, xmm1, Operand(rbx, rcx, times_1, 10000));
       __ vmovss(xmm9, Operand(r11, rcx, times_8, -10000));
       __ vmovss(Operand(rbx, r9, times_4, 10000), xmm1);
       __ vucomiss(xmm9, xmm1);
@@ -664,6 +681,8 @@ TEST(DisasmX64) {
       __ vandps(xmm9, xmm1, Operand(rbx, rcx, times_4, 10000));
       __ vxorps(xmm0, xmm1, xmm9);
       __ vxorps(xmm0, xmm1, Operand(rbx, rcx, times_4, 10000));
+      __ vhaddps(xmm0, xmm1, xmm9);
+      __ vhaddps(xmm0, xmm1, Operand(rbx, rcx, times_4, 10000));
 
       __ vandpd(xmm0, xmm9, xmm2);
       __ vandpd(xmm9, xmm1, Operand(rbx, rcx, times_4, 10000));
@@ -939,17 +958,21 @@ TEST(DisasmX64) {
   __ ret(0);
 
   CodeDesc desc;
-  assm.GetCode(&desc);
-  Handle<Code> code = isolate->factory()->NewCode(
-      desc, Code::ComputeFlags(Code::STUB), Handle<Code>());
+  assm.GetCode(isolate, &desc);
+  Handle<Code> code =
+      isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
   USE(code);
 #ifdef OBJECT_PRINT
   OFStream os(stdout);
   code->Print(os);
-  byte* begin = code->instruction_start();
-  byte* end = begin + code->instruction_size();
-  disasm::Disassembler::Disassemble(stdout, begin, end);
+  Address begin = code->raw_instruction_start();
+  Address end = code->raw_instruction_end();
+  disasm::Disassembler::Disassemble(stdout, reinterpret_cast<byte*>(begin),
+                                    reinterpret_cast<byte*>(end));
 #endif
 }
 
 #undef __
+
+}  // namespace internal
+}  // namespace v8

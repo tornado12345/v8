@@ -7,8 +7,9 @@
 #include "src/arguments.h"
 #include "src/code-stubs.h"
 #include "src/conversions-inl.h"
+#include "src/debug/debug.h"
 #include "src/elements.h"
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/isolate-inl.h"
 #include "src/keys.h"
 #include "src/messages.h"
@@ -16,89 +17,6 @@
 
 namespace v8 {
 namespace internal {
-
-RUNTIME_FUNCTION(Runtime_FinishArrayPrototypeSetup) {
-  HandleScope scope(isolate);
-  DCHECK(args.length() == 1);
-  CONVERT_ARG_HANDLE_CHECKED(JSArray, prototype, 0);
-  Object* length = prototype->length();
-  CHECK(length->IsSmi());
-  CHECK(Smi::cast(length)->value() == 0);
-  CHECK(prototype->HasFastSmiOrObjectElements());
-  // This is necessary to enable fast checks for absence of elements
-  // on Array.prototype and below.
-  prototype->set_elements(isolate->heap()->empty_fixed_array());
-  return Smi::kZero;
-}
-
-static void InstallCode(Isolate* isolate, Handle<JSObject> holder,
-                        const char* name, Handle<Code> code, int argc = -1) {
-  Handle<String> key = isolate->factory()->InternalizeUtf8String(name);
-  Handle<JSFunction> optimized =
-      isolate->factory()->NewFunctionWithoutPrototype(key, code);
-  if (argc < 0) {
-    optimized->shared()->DontAdaptArguments();
-  } else {
-    optimized->shared()->set_internal_formal_parameter_count(argc);
-  }
-  JSObject::AddProperty(holder, key, optimized, NONE);
-}
-
-static void InstallBuiltin(Isolate* isolate, Handle<JSObject> holder,
-                           const char* name, Builtins::Name builtin_name,
-                           int argc = -1) {
-  InstallCode(isolate, holder, name,
-              handle(isolate->builtins()->builtin(builtin_name), isolate),
-              argc);
-}
-
-RUNTIME_FUNCTION(Runtime_SpecialArrayFunctions) {
-  HandleScope scope(isolate);
-  DCHECK(args.length() == 0);
-  Handle<JSObject> holder =
-      isolate->factory()->NewJSObject(isolate->object_function());
-
-  InstallBuiltin(isolate, holder, "pop", Builtins::kArrayPop);
-  if (FLAG_minimal) {
-    InstallBuiltin(isolate, holder, "push", Builtins::kArrayPush);
-  } else {
-    FastArrayPushStub stub(isolate);
-    InstallCode(isolate, holder, "push", stub.GetCode());
-  }
-  InstallBuiltin(isolate, holder, "shift", Builtins::kArrayShift);
-  InstallBuiltin(isolate, holder, "unshift", Builtins::kArrayUnshift);
-  InstallBuiltin(isolate, holder, "slice", Builtins::kArraySlice);
-  InstallBuiltin(isolate, holder, "splice", Builtins::kArraySplice);
-  InstallBuiltin(isolate, holder, "includes", Builtins::kArrayIncludes, 2);
-  InstallBuiltin(isolate, holder, "indexOf", Builtins::kArrayIndexOf, 2);
-  InstallBuiltin(isolate, holder, "keys", Builtins::kArrayPrototypeKeys, 0);
-  InstallBuiltin(isolate, holder, "values", Builtins::kArrayPrototypeValues, 0);
-  InstallBuiltin(isolate, holder, "entries", Builtins::kArrayPrototypeEntries,
-                 0);
-
-  return *holder;
-}
-
-
-RUNTIME_FUNCTION(Runtime_FixedArrayGet) {
-  SealHandleScope shs(isolate);
-  DCHECK(args.length() == 2);
-  CONVERT_ARG_CHECKED(FixedArray, object, 0);
-  CONVERT_SMI_ARG_CHECKED(index, 1);
-  return object->get(index);
-}
-
-
-RUNTIME_FUNCTION(Runtime_FixedArraySet) {
-  SealHandleScope shs(isolate);
-  DCHECK(args.length() == 3);
-  CONVERT_ARG_CHECKED(FixedArray, object, 0);
-  CONVERT_SMI_ARG_CHECKED(index, 1);
-  CONVERT_ARG_CHECKED(Object, value, 2);
-  object->set(index, value);
-  return isolate->heap()->undefined_value();
-}
-
 
 RUNTIME_FUNCTION(Runtime_TransitionElementsKind) {
   HandleScope scope(isolate);
@@ -110,6 +28,225 @@ RUNTIME_FUNCTION(Runtime_TransitionElementsKind) {
   return *object;
 }
 
+namespace {
+// As PrepareElementsForSort, but only on objects where elements is
+// a dictionary, and it will stay a dictionary.  Collates undefined and
+// unexisting elements below limit from position zero of the elements.
+Object* PrepareSlowElementsForSort(Handle<JSObject> object, uint32_t limit) {
+  DCHECK(object->HasDictionaryElements());
+  Isolate* isolate = object->GetIsolate();
+  // Must stay in dictionary mode, either because of requires_slow_elements,
+  // or because we are not going to sort (and therefore compact) all of the
+  // elements.
+  Handle<NumberDictionary> dict(object->element_dictionary(), isolate);
+  Handle<NumberDictionary> new_dict =
+      NumberDictionary::New(isolate, dict->NumberOfElements());
+
+  uint32_t pos = 0;
+  uint32_t undefs = 0;
+  uint32_t max_key = 0;
+  int capacity = dict->Capacity();
+  Smi* bailout = Smi::FromInt(-1);
+  // Entry to the new dictionary does not cause it to grow, as we have
+  // allocated one that is large enough for all entries.
+  for (int i = 0; i < capacity; i++) {
+    Object* k;
+    if (!dict->ToKey(isolate, i, &k)) continue;
+
+    DCHECK_LE(0, k->Number());
+    DCHECK_LE(k->Number(), kMaxUInt32);
+
+    HandleScope scope(isolate);
+    Handle<Object> value(dict->ValueAt(i), isolate);
+    PropertyDetails details = dict->DetailsAt(i);
+    if (details.kind() == kAccessor || details.IsReadOnly()) {
+      // Bail out and do the sorting of undefineds and array holes in JS.
+      // Also bail out if the element is not supposed to be moved.
+      return bailout;
+    }
+
+    uint32_t key = NumberToUint32(k);
+    if (key < limit) {
+      if (value->IsUndefined(isolate)) {
+        undefs++;
+      } else {
+        Handle<Object> result =
+            NumberDictionary::Add(new_dict, pos, value, details);
+        // Add should not grow the dictionary since we allocated the right size.
+        DCHECK(result.is_identical_to(new_dict));
+        USE(result);
+        pos++;
+      }
+    } else {
+      Handle<Object> result =
+          NumberDictionary::Add(new_dict, key, value, details);
+      // Add should not grow the dictionary since we allocated the right size.
+      DCHECK(result.is_identical_to(new_dict));
+      USE(result);
+      max_key = Max(max_key, key);
+    }
+  }
+
+  uint32_t result = pos;
+  PropertyDetails no_details = PropertyDetails::Empty();
+  while (undefs > 0) {
+    if (pos > static_cast<uint32_t>(Smi::kMaxValue)) {
+      // Adding an entry with the key beyond smi-range requires
+      // allocation. Bailout.
+      return bailout;
+    }
+    HandleScope scope(isolate);
+    Handle<Object> result = NumberDictionary::Add(
+        new_dict, pos, isolate->factory()->undefined_value(), no_details);
+    // Add should not grow the dictionary since we allocated the right size.
+    DCHECK(result.is_identical_to(new_dict));
+    USE(result);
+    pos++;
+    undefs--;
+  }
+  max_key = Max(max_key, pos - 1);
+
+  object->set_elements(*new_dict);
+  new_dict->UpdateMaxNumberKey(max_key, object);
+  JSObject::ValidateElements(*object);
+
+  return *isolate->factory()->NewNumberFromUint(result);
+}
+
+// Collects all defined (non-hole) and non-undefined (array) elements at the
+// start of the elements array.  If the object is in dictionary mode, it is
+// converted to fast elements mode.  Undefined values are placed after
+// non-undefined values.  Returns the number of non-undefined values.
+Object* PrepareElementsForSort(Handle<JSObject> object, uint32_t limit) {
+  Isolate* isolate = object->GetIsolate();
+  if (object->HasSloppyArgumentsElements() || !object->map()->is_extensible()) {
+    return Smi::FromInt(-1);
+  }
+  if (object->HasStringWrapperElements()) {
+    int len = String::cast(Handle<JSValue>::cast(object)->value())->length();
+    return Smi::FromInt(len);
+  }
+
+  JSObject::ValidateElements(*object);
+  if (object->HasDictionaryElements()) {
+    // Convert to fast elements containing only the existing properties.
+    // Ordering is irrelevant, since we are going to sort anyway.
+    Handle<NumberDictionary> dict(object->element_dictionary());
+    if (object->IsJSArray() || dict->requires_slow_elements() ||
+        dict->max_number_key() >= limit) {
+      return PrepareSlowElementsForSort(object, limit);
+    }
+    // Convert to fast elements.
+    Handle<Map> new_map =
+        JSObject::GetElementsTransitionMap(object, HOLEY_ELEMENTS);
+
+    PretenureFlag tenure =
+        isolate->heap()->InNewSpace(*object) ? NOT_TENURED : TENURED;
+    Handle<FixedArray> fast_elements =
+        isolate->factory()->NewFixedArray(dict->NumberOfElements(), tenure);
+    dict->CopyValuesTo(*fast_elements);
+
+    JSObject::SetMapAndElements(object, new_map, fast_elements);
+    JSObject::ValidateElements(*object);
+  } else if (object->HasFixedTypedArrayElements()) {
+    // Typed arrays cannot have holes or undefined elements.
+    int array_length = FixedArrayBase::cast(object->elements())->length();
+    return Smi::FromInt(Min(limit, static_cast<uint32_t>(array_length)));
+  } else if (!object->HasDoubleElements()) {
+    JSObject::EnsureWritableFastElements(object);
+  }
+  DCHECK(object->HasSmiOrObjectElements() || object->HasDoubleElements());
+
+  // Collect holes at the end, undefined before that and the rest at the
+  // start, and return the number of non-hole, non-undefined values.
+
+  Handle<FixedArrayBase> elements_base(object->elements());
+  uint32_t elements_length = static_cast<uint32_t>(elements_base->length());
+  if (limit > elements_length) {
+    limit = elements_length;
+  }
+  if (limit == 0) {
+    return Smi::kZero;
+  }
+
+  uint32_t result = 0;
+  if (elements_base->map() == isolate->heap()->fixed_double_array_map()) {
+    FixedDoubleArray* elements = FixedDoubleArray::cast(*elements_base);
+    // Split elements into defined and the_hole, in that order.
+    unsigned int holes = limit;
+    // Assume most arrays contain no holes and undefined values, so minimize the
+    // number of stores of non-undefined, non-the-hole values.
+    for (unsigned int i = 0; i < holes; i++) {
+      if (elements->is_the_hole(i)) {
+        holes--;
+      } else {
+        continue;
+      }
+      // Position i needs to be filled.
+      while (holes > i) {
+        if (elements->is_the_hole(holes)) {
+          holes--;
+        } else {
+          elements->set(i, elements->get_scalar(holes));
+          break;
+        }
+      }
+    }
+    result = holes;
+    while (holes < limit) {
+      elements->set_the_hole(holes);
+      holes++;
+    }
+  } else {
+    FixedArray* elements = FixedArray::cast(*elements_base);
+    DisallowHeapAllocation no_gc;
+
+    // Split elements into defined, undefined and the_hole, in that order.  Only
+    // count locations for undefined and the hole, and fill them afterwards.
+    WriteBarrierMode write_barrier = elements->GetWriteBarrierMode(no_gc);
+    unsigned int undefs = limit;
+    unsigned int holes = limit;
+    // Assume most arrays contain no holes and undefined values, so minimize the
+    // number of stores of non-undefined, non-the-hole values.
+    for (unsigned int i = 0; i < undefs; i++) {
+      Object* current = elements->get(i);
+      if (current->IsTheHole(isolate)) {
+        holes--;
+        undefs--;
+      } else if (current->IsUndefined(isolate)) {
+        undefs--;
+      } else {
+        continue;
+      }
+      // Position i needs to be filled.
+      while (undefs > i) {
+        current = elements->get(undefs);
+        if (current->IsTheHole(isolate)) {
+          holes--;
+          undefs--;
+        } else if (current->IsUndefined(isolate)) {
+          undefs--;
+        } else {
+          elements->set(i, current, write_barrier);
+          break;
+        }
+      }
+    }
+    result = undefs;
+    while (undefs < holes) {
+      elements->set_undefined(isolate, undefs);
+      undefs++;
+    }
+    while (holes < limit) {
+      elements->set_the_hole(isolate, holes);
+      holes++;
+    }
+  }
+
+  return *isolate->factory()->NewNumberFromUint(result);
+}
+
+}  // namespace
 
 // Moves all own elements of an object, that are below a limit, to positions
 // starting at zero. All undefined values are placed after non-undefined values,
@@ -119,23 +256,27 @@ RUNTIME_FUNCTION(Runtime_TransitionElementsKind) {
 // Returns -1 if hole removal is not supported by this method.
 RUNTIME_FUNCTION(Runtime_RemoveArrayHoles) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 2);
+  DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSReceiver, object, 0);
   CONVERT_NUMBER_CHECKED(uint32_t, limit, Uint32, args[1]);
+  if (isolate->debug_execution_mode() == DebugInfo::kSideEffects) {
+    if (!isolate->debug()->PerformSideEffectCheckForObject(object)) {
+      return isolate->heap()->exception();
+    }
+  }
   if (object->IsJSProxy()) return Smi::FromInt(-1);
-  return *JSObject::PrepareElementsForSort(Handle<JSObject>::cast(object),
-                                           limit);
+  return PrepareElementsForSort(Handle<JSObject>::cast(object), limit);
 }
 
 
 // Move contents of argument 0 (an array) to argument 1 (an array)
 RUNTIME_FUNCTION(Runtime_MoveArrayContents) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 2);
+  DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSArray, from, 0);
   CONVERT_ARG_HANDLE_CHECKED(JSArray, to, 1);
-  JSObject::ValidateElements(from);
-  JSObject::ValidateElements(to);
+  JSObject::ValidateElements(*from);
+  JSObject::ValidateElements(*to);
 
   Handle<FixedArrayBase> new_elements(from->elements());
   ElementsKind from_kind = from->GetElementsKind();
@@ -143,24 +284,24 @@ RUNTIME_FUNCTION(Runtime_MoveArrayContents) {
   JSObject::SetMapAndElements(to, new_map, new_elements);
   to->set_length(from->length());
 
-  JSObject::ResetElements(from);
+  from->initialize_elements();
   from->set_length(Smi::kZero);
 
-  JSObject::ValidateElements(to);
+  JSObject::ValidateElements(*to);
   return *to;
 }
 
 
 // How many elements does this object/array have?
 RUNTIME_FUNCTION(Runtime_EstimateNumberOfElements) {
+  DisallowHeapAllocation no_gc;
   HandleScope scope(isolate);
-  DCHECK(args.length() == 1);
-  CONVERT_ARG_HANDLE_CHECKED(JSArray, array, 0);
-  Handle<FixedArrayBase> elements(array->elements(), isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_CHECKED(JSArray, array, 0);
+  FixedArrayBase* elements = array->elements();
   SealHandleScope shs(isolate);
   if (elements->IsDictionary()) {
-    int result =
-        Handle<SeededNumberDictionary>::cast(elements)->NumberOfElements();
+    int result = NumberDictionary::cast(elements)->NumberOfElements();
     return Smi::FromInt(result);
   } else {
     DCHECK(array->length()->IsSmi());
@@ -197,7 +338,7 @@ RUNTIME_FUNCTION(Runtime_EstimateNumberOfElements) {
 // Intervals can span over some keys that are not in the object.
 RUNTIME_FUNCTION(Runtime_GetArrayKeys) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 2);
+  DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSObject, array, 0);
   CONVERT_NUMBER_CHECKED(uint32_t, length, Uint32, args[1]);
   ElementsKind kind = array->GetElementsKind();
@@ -220,15 +361,12 @@ RUNTIME_FUNCTION(Runtime_GetArrayKeys) {
                              ALL_PROPERTIES);
   for (PrototypeIterator iter(isolate, array, kStartAtReceiver);
        !iter.IsAtEnd(); iter.Advance()) {
-    if (PrototypeIterator::GetCurrent(iter)->IsJSProxy() ||
-        PrototypeIterator::GetCurrent<JSObject>(iter)
-            ->HasIndexedInterceptor()) {
-      // Bail out if we find a proxy or interceptor, likely not worth
-      // collecting keys in that case.
+    Handle<JSReceiver> current(PrototypeIterator::GetCurrent<JSReceiver>(iter));
+    if (current->HasComplexElements()) {
       return *isolate->factory()->NewNumberFromUint(length);
     }
-    Handle<JSObject> current = PrototypeIterator::GetCurrent<JSObject>(iter);
-    accumulator.CollectOwnElementIndices(array, current);
+    accumulator.CollectOwnElementIndices(array,
+                                         Handle<JSObject>::cast(current));
   }
   // Erase any keys >= length.
   Handle<FixedArray> keys =
@@ -241,20 +379,64 @@ RUNTIME_FUNCTION(Runtime_GetArrayKeys) {
   }
 
   if (j != keys->length()) {
-    isolate->heap()->RightTrimFixedArray<Heap::CONCURRENT_TO_SWEEPER>(
-        *keys, keys->length() - j);
+    isolate->heap()->RightTrimFixedArray(*keys, keys->length() - j);
   }
 
   return *isolate->factory()->NewJSArrayWithElements(keys);
 }
 
+RUNTIME_FUNCTION(Runtime_TrySliceSimpleNonFastElements) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(3, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(JSReceiver, receiver, 0);
+  CONVERT_SMI_ARG_CHECKED(first, 1);
+  CONVERT_SMI_ARG_CHECKED(count, 2);
+  uint32_t length = first + count;
 
-namespace {
+  // Only handle elements kinds that have a ElementsAccessor Slice
+  // implementation.
+  if (receiver->IsJSArray()) {
+    // This "fastish" path must make sure the destination array is a JSArray.
+    if (!isolate->IsArraySpeciesLookupChainIntact() ||
+        !JSArray::cast(*receiver)->HasArrayPrototype(isolate)) {
+      return Smi::FromInt(0);
+    }
+  } else {
+    int len;
+    if (!receiver->IsJSObject() ||
+        !JSSloppyArgumentsObject::GetSloppyArgumentsLength(
+            isolate, Handle<JSObject>::cast(receiver), &len) ||
+        (length > static_cast<uint32_t>(len))) {
+      return Smi::FromInt(0);
+    }
+  }
 
-Object* ArrayConstructorCommon(Isolate* isolate, Handle<JSFunction> constructor,
-                               Handle<JSReceiver> new_target,
-                               Handle<AllocationSite> site,
-                               Arguments* caller_args) {
+  // This "fastish" path must also ensure that elements are simple (no
+  // geters/setters), no elements on prototype chain.
+  Handle<JSObject> object(Handle<JSObject>::cast(receiver));
+  if (!JSObject::PrototypeHasNoElements(isolate, *object) ||
+      object->HasComplexElements()) {
+    return Smi::FromInt(0);
+  }
+
+  ElementsAccessor* accessor = object->GetElementsAccessor();
+  return *accessor->Slice(object, first, length);
+}
+
+RUNTIME_FUNCTION(Runtime_NewArray) {
+  HandleScope scope(isolate);
+  DCHECK_LE(3, args.length());
+  int const argc = args.length() - 3;
+  // TODO(bmeurer): Remove this Arguments nonsense.
+  Arguments argv(argc, args.arguments() - 1);
+  CONVERT_ARG_HANDLE_CHECKED(JSFunction, constructor, 0);
+  CONVERT_ARG_HANDLE_CHECKED(JSReceiver, new_target, argc + 1);
+  CONVERT_ARG_HANDLE_CHECKED(HeapObject, type_info, argc + 2);
+  // TODO(bmeurer): Use MaybeHandle to pass around the AllocationSite.
+  Handle<AllocationSite> site = type_info->IsAllocationSite()
+                                    ? Handle<AllocationSite>::cast(type_info)
+                                    : Handle<AllocationSite>::null();
+
   Factory* factory = isolate->factory();
 
   // If called through new, new.target can be:
@@ -268,8 +450,8 @@ Object* ArrayConstructorCommon(Isolate* isolate, Handle<JSFunction> constructor,
   bool holey = false;
   bool can_use_type_feedback = !site.is_null();
   bool can_inline_array_constructor = true;
-  if (caller_args->length() == 1) {
-    Handle<Object> argument_one = caller_args->at<Object>(0);
+  if (argv.length() == 1) {
+    Handle<Object> argument_one = argv.at<Object>(0);
     if (argument_one->IsSmi()) {
       int value = Handle<Smi>::cast(argument_one)->value();
       if (value < 0 ||
@@ -295,7 +477,7 @@ Object* ArrayConstructorCommon(Isolate* isolate, Handle<JSFunction> constructor,
 
   ElementsKind to_kind = can_use_type_feedback ? site->GetElementsKind()
                                                : initial_map->elements_kind();
-  if (holey && !IsFastHoleyElementsKind(to_kind)) {
+  if (holey && !IsHoleyElementsKind(to_kind)) {
     to_kind = GetHoleyElementsKind(to_kind);
     // Update the allocation site info to reflect the advice alteration.
     if (!site.is_null()) site->SetElementsKind(to_kind);
@@ -311,7 +493,7 @@ Object* ArrayConstructorCommon(Isolate* isolate, Handle<JSFunction> constructor,
   // If we don't care to track arrays of to_kind ElementsKind, then
   // don't emit a memento for them.
   Handle<AllocationSite> allocation_site;
-  if (AllocationSite::GetMode(to_kind) == TRACK_ALLOCATION_SITE) {
+  if (AllocationSite::ShouldTrack(to_kind)) {
     allocation_site = site;
   }
 
@@ -321,41 +503,35 @@ Object* ArrayConstructorCommon(Isolate* isolate, Handle<JSFunction> constructor,
   factory->NewJSArrayStorage(array, 0, 0, DONT_INITIALIZE_ARRAY_ELEMENTS);
 
   ElementsKind old_kind = array->GetElementsKind();
-  RETURN_FAILURE_ON_EXCEPTION(
-      isolate, ArrayConstructInitializeElements(array, caller_args));
-  if (!site.is_null() &&
-      (old_kind != array->GetElementsKind() || !can_use_type_feedback ||
-       !can_inline_array_constructor)) {
-    // The arguments passed in caused a transition. This kind of complexity
-    // can't be dealt with in the inlined hydrogen array constructor case.
-    // We must mark the allocationsite as un-inlinable.
-    site->SetDoNotInlineCall();
+  RETURN_FAILURE_ON_EXCEPTION(isolate,
+                              ArrayConstructInitializeElements(array, &argv));
+  if (!site.is_null()) {
+    if ((old_kind != array->GetElementsKind() || !can_use_type_feedback ||
+         !can_inline_array_constructor)) {
+      // The arguments passed in caused a transition. This kind of complexity
+      // can't be dealt with in the inlined hydrogen array constructor case.
+      // We must mark the allocationsite as un-inlinable.
+      site->SetDoNotInlineCall();
+    }
+  } else {
+    if (old_kind != array->GetElementsKind() || !can_inline_array_constructor) {
+      // We don't have an AllocationSite for this Array constructor invocation,
+      // i.e. it might a call from Array#map or from an Array subclass, so we
+      // just flip the bit on the global protector cell instead.
+      // TODO(bmeurer): Find a better way to mark this. Global protectors
+      // tend to back-fire over time...
+      if (isolate->IsArrayConstructorIntact()) {
+        isolate->InvalidateArrayConstructorProtector();
+      }
+    }
   }
 
   return *array;
 }
 
-}  // namespace
-
-RUNTIME_FUNCTION(Runtime_NewArray) {
-  HandleScope scope(isolate);
-  DCHECK_LE(3, args.length());
-  int const argc = args.length() - 3;
-  // TODO(bmeurer): Remove this Arguments nonsense.
-  Arguments argv(argc, args.arguments() - 1);
-  CONVERT_ARG_HANDLE_CHECKED(JSFunction, constructor, 0);
-  CONVERT_ARG_HANDLE_CHECKED(JSReceiver, new_target, argc + 1);
-  CONVERT_ARG_HANDLE_CHECKED(HeapObject, type_info, argc + 2);
-  // TODO(bmeurer): Use MaybeHandle to pass around the AllocationSite.
-  Handle<AllocationSite> site = type_info->IsAllocationSite()
-                                    ? Handle<AllocationSite>::cast(type_info)
-                                    : Handle<AllocationSite>::null();
-  return ArrayConstructorCommon(isolate, constructor, new_target, site, &argv);
-}
-
 RUNTIME_FUNCTION(Runtime_NormalizeElements) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 1);
+  DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSObject, array, 0);
   CHECK(!array->HasFixedTypedArrayElements());
   CHECK(!array->IsJSGlobalProxy());
@@ -363,17 +539,15 @@ RUNTIME_FUNCTION(Runtime_NormalizeElements) {
   return *array;
 }
 
-
-// GrowArrayElements returns a sentinel Smi if the object was normalized.
+// GrowArrayElements returns a sentinel Smi if the object was normalized or if
+// the key is negative.
 RUNTIME_FUNCTION(Runtime_GrowArrayElements) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 2);
+  DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSObject, object, 0);
   CONVERT_NUMBER_CHECKED(int, key, Int32, args[1]);
 
-  if (key < 0) {
-    return object->elements();
-  }
+  if (key < 0) return Smi::kZero;
 
   uint32_t capacity = static_cast<uint32_t>(object->elements()->length());
   uint32_t index = static_cast<uint32_t>(key);
@@ -384,26 +558,17 @@ RUNTIME_FUNCTION(Runtime_GrowArrayElements) {
     }
   }
 
-  // On success, return the fixed array elements.
   return object->elements();
 }
 
 
 RUNTIME_FUNCTION(Runtime_HasComplexElements) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 1);
+  DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSObject, array, 0);
   for (PrototypeIterator iter(isolate, array, kStartAtReceiver);
        !iter.IsAtEnd(); iter.Advance()) {
-    if (PrototypeIterator::GetCurrent(iter)->IsJSProxy()) {
-      return isolate->heap()->true_value();
-    }
-    Handle<JSObject> current = PrototypeIterator::GetCurrent<JSObject>(iter);
-    if (current->HasIndexedInterceptor()) {
-      return isolate->heap()->true_value();
-    }
-    if (!current->HasDictionaryElements()) continue;
-    if (current->element_dictionary()->HasComplexElements()) {
+    if (PrototypeIterator::GetCurrent<JSReceiver>(iter)->HasComplexElements()) {
       return isolate->heap()->true_value();
     }
   }
@@ -413,7 +578,7 @@ RUNTIME_FUNCTION(Runtime_HasComplexElements) {
 // ES6 22.1.2.2 Array.isArray
 RUNTIME_FUNCTION(Runtime_ArrayIsArray) {
   HandleScope shs(isolate);
-  DCHECK(args.length() == 1);
+  DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(Object, object, 0);
   Maybe<bool> result = Object::IsArray(object);
   MAYBE_RETURN(result, isolate->heap()->exception());
@@ -422,14 +587,14 @@ RUNTIME_FUNCTION(Runtime_ArrayIsArray) {
 
 RUNTIME_FUNCTION(Runtime_IsArray) {
   SealHandleScope shs(isolate);
-  DCHECK(args.length() == 1);
+  DCHECK_EQ(1, args.length());
   CONVERT_ARG_CHECKED(Object, obj, 0);
   return isolate->heap()->ToBoolean(obj->IsJSArray());
 }
 
 RUNTIME_FUNCTION(Runtime_ArraySpeciesConstructor) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 1);
+  DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(Object, original_array, 0);
   RETURN_RESULT_OR_FAILURE(
       isolate, Object::ArraySpeciesConstructor(isolate, original_array));
@@ -438,7 +603,7 @@ RUNTIME_FUNCTION(Runtime_ArraySpeciesConstructor) {
 // ES7 22.1.3.11 Array.prototype.includes
 RUNTIME_FUNCTION(Runtime_ArrayIncludes_Slow) {
   HandleScope shs(isolate);
-  DCHECK(args.length() == 3);
+  DCHECK_EQ(3, args.length());
   CONVERT_ARG_HANDLE_CHECKED(Object, search_element, 1);
   CONVERT_ARG_HANDLE_CHECKED(Object, from_index, 2);
 
@@ -473,29 +638,37 @@ RUNTIME_FUNCTION(Runtime_ArrayIncludes_Slow) {
 
   // Let n be ? ToInteger(fromIndex). (If fromIndex is undefined, this step
   // produces the value 0.)
-  int64_t start_from;
-  {
+  int64_t index = 0;
+  if (!from_index->IsUndefined(isolate)) {
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, from_index,
                                        Object::ToInteger(isolate, from_index));
-    double fp = from_index->Number();
-    if (fp > len) return isolate->heap()->false_value();
-    start_from = static_cast<int64_t>(fp);
-  }
 
-  int64_t index;
-  if (start_from >= 0) {
-    index = start_from;
-  } else {
-    index = len + start_from;
-    if (index < 0) {
-      index = 0;
+    if (V8_LIKELY(from_index->IsSmi())) {
+      int start_from = Smi::ToInt(*from_index);
+      if (start_from < 0) {
+        index = std::max<int64_t>(len + start_from, 0);
+      } else {
+        index = start_from;
+      }
+    } else {
+      DCHECK(from_index->IsHeapNumber());
+      double start_from = from_index->Number();
+      if (start_from >= len) return isolate->heap()->false_value();
+      if (V8_LIKELY(std::isfinite(start_from))) {
+        if (start_from < 0) {
+          index = static_cast<int64_t>(std::max<double>(start_from + len, 0));
+        } else {
+          index = start_from;
+        }
+      }
     }
+
+    DCHECK_GE(index, 0);
   }
 
   // If the receiver is not a special receiver type, and the length is a valid
   // element index, perform fast operation tailored to specific ElementsKinds.
-  if (object->map()->instance_type() > LAST_SPECIAL_RECEIVER_TYPE &&
-      len < kMaxUInt32 &&
+  if (!object->map()->IsSpecialReceiverMap() && len < kMaxUInt32 &&
       JSObject::PrototypeHasNoElements(isolate, JSObject::cast(*object))) {
     Handle<JSObject> obj = Handle<JSObject>::cast(object);
     ElementsAccessor* elements = obj->GetElementsAccessor();
@@ -530,21 +703,15 @@ RUNTIME_FUNCTION(Runtime_ArrayIncludes_Slow) {
 
 RUNTIME_FUNCTION(Runtime_ArrayIndexOf) {
   HandleScope shs(isolate);
-  DCHECK(args.length() == 3);
+  DCHECK_EQ(3, args.length());
   CONVERT_ARG_HANDLE_CHECKED(Object, search_element, 1);
   CONVERT_ARG_HANDLE_CHECKED(Object, from_index, 2);
 
   // Let O be ? ToObject(this value).
-  Handle<Object> receiver_obj = args.at<Object>(0);
-  if (receiver_obj->IsNull(isolate) || receiver_obj->IsUndefined(isolate)) {
-    THROW_NEW_ERROR_RETURN_FAILURE(
-        isolate, NewTypeError(MessageTemplate::kCalledOnNullOrUndefined,
-                              isolate->factory()->NewStringFromAsciiChecked(
-                                  "Array.prototype.indexOf")));
-  }
   Handle<JSReceiver> object;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-      isolate, object, Object::ToObject(isolate, args.at<Object>(0)));
+      isolate, object,
+      Object::ToObject(isolate, args.at(0), "Array.prototype.indexOf"));
 
   // Let len be ? ToLength(? Get(O, "length")).
   int64_t len;
@@ -578,7 +745,13 @@ RUNTIME_FUNCTION(Runtime_ArrayIndexOf) {
                                        Object::ToInteger(isolate, from_index));
     double fp = from_index->Number();
     if (fp > len) return Smi::FromInt(-1);
-    start_from = static_cast<int64_t>(fp);
+    if (V8_LIKELY(fp >=
+                  static_cast<double>(std::numeric_limits<int64_t>::min()))) {
+      DCHECK(fp < std::numeric_limits<int64_t>::max());
+      start_from = static_cast<int64_t>(fp);
+    } else {
+      start_from = std::numeric_limits<int64_t>::min();
+    }
   }
 
   int64_t index;
@@ -593,8 +766,7 @@ RUNTIME_FUNCTION(Runtime_ArrayIndexOf) {
 
   // If the receiver is not a special receiver type, and the length is a valid
   // element index, perform fast operation tailored to specific ElementsKinds.
-  if (object->map()->instance_type() > LAST_SPECIAL_RECEIVER_TYPE &&
-      len < kMaxUInt32 &&
+  if (!object->map()->IsSpecialReceiverMap() && len < kMaxUInt32 &&
       JSObject::PrototypeHasNoElements(isolate, JSObject::cast(*object))) {
     Handle<JSObject> obj = Handle<JSObject>::cast(object);
     ElementsAccessor* elements = obj->GetElementsAccessor();
@@ -615,9 +787,9 @@ RUNTIME_FUNCTION(Runtime_ArrayIndexOf) {
       LookupIterator it = LookupIterator::PropertyOrElement(
           isolate, object, index_obj, &success);
       DCHECK(success);
-      if (!JSReceiver::HasProperty(&it).FromJust()) {
-        continue;
-      }
+      Maybe<bool> present = JSReceiver::HasProperty(&it);
+      MAYBE_RETURN(present, isolate->heap()->exception());
+      if (!present.FromJust()) continue;
       ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, element_k,
                                          Object::GetProperty(&it));
       if (search_element->StrictEquals(*element_k)) {

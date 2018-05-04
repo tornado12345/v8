@@ -5,8 +5,8 @@
 #ifndef V8_KEYS_H_
 #define V8_KEYS_H_
 
-#include "src/isolate.h"
 #include "src/objects.h"
+#include "src/objects/hash-table.h"
 
 namespace v8 {
 namespace internal {
@@ -53,6 +53,10 @@ class KeyAccumulator final BASE_EMBEDDED {
       Handle<AccessCheckInfo> access_check_info, Handle<JSReceiver> receiver,
       Handle<JSObject> object);
 
+  // Might return directly the object's enum_cache, copy the result before using
+  // as an elements backing store for a JSObject.
+  // Does not throw for uninitialized exports in module namespace objects, so
+  // this has to be checked separately.
   static Handle<FixedArray> GetOwnEnumPropertyKeys(Isolate* isolate,
                                                    Handle<JSObject> object);
 
@@ -139,6 +143,8 @@ class FastKeyAccumulator {
   void Prepare();
   MaybeHandle<FixedArray> GetKeysFast(GetKeysConversion convert);
   MaybeHandle<FixedArray> GetKeysSlow(GetKeysConversion convert);
+
+  MaybeHandle<FixedArray> GetOwnKeysWithUninitializedEnumCache();
 
   Isolate* isolate_;
   Handle<JSReceiver> receiver_;

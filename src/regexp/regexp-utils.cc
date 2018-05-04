@@ -4,7 +4,7 @@
 
 #include "src/regexp/regexp-utils.h"
 
-#include "src/factory.h"
+#include "src/heap/factory.h"
 #include "src/isolate.h"
 #include "src/objects-inl.h"
 #include "src/regexp/jsregexp.h"
@@ -43,20 +43,22 @@ V8_INLINE bool HasInitialRegExpMap(Isolate* isolate, Handle<JSReceiver> recv) {
 
 MaybeHandle<Object> RegExpUtils::SetLastIndex(Isolate* isolate,
                                               Handle<JSReceiver> recv,
-                                              int value) {
+                                              uint64_t value) {
+  Handle<Object> value_as_object =
+      isolate->factory()->NewNumberFromInt64(value);
   if (HasInitialRegExpMap(isolate, recv)) {
-    JSRegExp::cast(*recv)->SetLastIndex(value);
+    JSRegExp::cast(*recv)->set_last_index(*value_as_object, SKIP_WRITE_BARRIER);
     return recv;
   } else {
     return Object::SetProperty(recv, isolate->factory()->lastIndex_string(),
-                               handle(Smi::FromInt(value), isolate), STRICT);
+                               value_as_object, LanguageMode::kStrict);
   }
 }
 
 MaybeHandle<Object> RegExpUtils::GetLastIndex(Isolate* isolate,
                                               Handle<JSReceiver> recv) {
   if (HasInitialRegExpMap(isolate, recv)) {
-    return handle(JSRegExp::cast(*recv)->LastIndex(), isolate);
+    return handle(JSRegExp::cast(*recv)->last_index(), isolate);
   } else {
     return Object::GetProperty(recv, isolate->factory()->lastIndex_string());
   }
@@ -118,12 +120,6 @@ Maybe<bool> RegExpUtils::IsRegExp(Isolate* isolate, Handle<Object> object) {
 
   Handle<JSReceiver> receiver = Handle<JSReceiver>::cast(object);
 
-  if (isolate->regexp_function()->initial_map() == receiver->map()) {
-    // Fast-path for unmodified JSRegExp instances.
-    // TODO(ishell): Adapt for new fast-path logic.
-    return Just(true);
-  }
-
   Handle<Object> match;
   ASSIGN_RETURN_ON_EXCEPTION_VALUE(
       isolate, match,
@@ -138,6 +134,10 @@ bool RegExpUtils::IsUnmodifiedRegExp(Isolate* isolate, Handle<Object> obj) {
   // TODO(ishell): Update this check once map changes for constant field
   // tracking are landing.
 
+#ifdef V8_ENABLE_FORCE_SLOW_PATH
+  if (isolate->force_slow_path()) return false;
+#endif
+
   if (!obj->IsJSReceiver()) return false;
 
   JSReceiver* recv = JSReceiver::cast(*obj);
@@ -151,15 +151,26 @@ bool RegExpUtils::IsUnmodifiedRegExp(Isolate* isolate, Handle<Object> obj) {
   if (!proto->IsJSReceiver()) return false;
 
   Handle<Map> initial_proto_initial_map = isolate->regexp_prototype_map();
-  return (JSReceiver::cast(proto)->map() == *initial_proto_initial_map);
+  if (JSReceiver::cast(proto)->map() != *initial_proto_initial_map) {
+    return false;
+  }
+
+  // The smi check is required to omit ToLength(lastIndex) calls with possible
+  // user-code execution on the fast path.
+  Object* last_index = JSRegExp::cast(recv)->last_index();
+  return last_index->IsSmi() && Smi::ToInt(last_index) >= 0;
 }
 
-int RegExpUtils::AdvanceStringIndex(Isolate* isolate, Handle<String> string,
-                                    int index, bool unicode) {
-  if (unicode && index < string->length()) {
-    const uint16_t first = string->Get(index);
-    if (first >= 0xD800 && first <= 0xDBFF && string->length() > index + 1) {
-      const uint16_t second = string->Get(index + 1);
+uint64_t RegExpUtils::AdvanceStringIndex(Isolate* isolate,
+                                         Handle<String> string, uint64_t index,
+                                         bool unicode) {
+  DCHECK_LE(static_cast<double>(index), kMaxSafeInteger);
+  const uint64_t string_length = static_cast<uint64_t>(string->length());
+  if (unicode && index < string_length) {
+    const uint16_t first = string->Get(static_cast<uint32_t>(index));
+    if (first >= 0xD800 && first <= 0xDBFF && index + 1 < string_length) {
+      DCHECK_LT(index, std::numeric_limits<uint64_t>::max());
+      const uint16_t second = string->Get(static_cast<uint32_t>(index + 1));
       if (second >= 0xDC00 && second <= 0xDFFF) {
         return index + 2;
       }
@@ -180,9 +191,8 @@ MaybeHandle<Object> RegExpUtils::SetAdvancedStringIndex(
 
   ASSIGN_RETURN_ON_EXCEPTION(isolate, last_index_obj,
                              Object::ToLength(isolate, last_index_obj), Object);
-
-  const int last_index = Handle<Smi>::cast(last_index_obj)->value();
-  const int new_last_index =
+  const uint64_t last_index = PositiveNumberToUint64(*last_index_obj);
+  const uint64_t new_last_index =
       AdvanceStringIndex(isolate, string, last_index, unicode);
 
   return SetLastIndex(isolate, regexp, new_last_index);

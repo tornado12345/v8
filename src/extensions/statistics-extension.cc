@@ -17,7 +17,7 @@ const char* const StatisticsExtension::kSource =
 
 v8::Local<v8::FunctionTemplate> StatisticsExtension::GetNativeFunctionTemplate(
     v8::Isolate* isolate, v8::Local<v8::String> str) {
-  DCHECK(strcmp(*v8::String::Utf8Value(str), "getV8Statistics") == 0);
+  DCHECK_EQ(strcmp(*v8::String::Utf8Value(isolate, str), "getV8Statistics"), 0);
   return v8::FunctionTemplate::New(isolate, StatisticsExtension::GetCounters);
 }
 
@@ -35,14 +35,14 @@ static void AddCounter(v8::Isolate* isolate,
   }
 }
 
-static void AddNumber(v8::Isolate* isolate,
-                      v8::Local<v8::Object> object,
-                      intptr_t value,
-                      const char* name) {
-  object->Set(isolate->GetCurrentContext(),
-              v8::String::NewFromUtf8(isolate, name, NewStringType::kNormal)
-                  .ToLocalChecked(),
-              v8::Number::New(isolate, static_cast<double>(value))).FromJust();
+static void AddNumber(v8::Isolate* isolate, v8::Local<v8::Object> object,
+                      double value, const char* name) {
+  object
+      ->Set(isolate->GetCurrentContext(),
+            v8::String::NewFromUtf8(isolate, name, NewStringType::kNormal)
+                .ToLocalChecked(),
+            v8::Number::New(isolate, value))
+      .FromJust();
 }
 
 
@@ -86,24 +86,6 @@ void StatisticsExtension::GetCounters(
 
       STATS_COUNTER_LIST_1(ADD_COUNTER) STATS_COUNTER_LIST_2(ADD_COUNTER)
 #undef ADD_COUNTER
-#define ADD_COUNTER(name)                            \
-  { counters->count_of_##name(), "count_of_" #name } \
-  , {counters->size_of_##name(), "size_of_" #name},
-
-          INSTANCE_TYPE_LIST(ADD_COUNTER)
-#undef ADD_COUNTER
-#define ADD_COUNTER(name)                                                \
-  { counters->count_of_CODE_TYPE_##name(), "count_of_CODE_TYPE_" #name } \
-  , {counters->size_of_CODE_TYPE_##name(), "size_of_CODE_TYPE_" #name},
-
-              CODE_KIND_LIST(ADD_COUNTER)
-#undef ADD_COUNTER
-#define ADD_COUNTER(name)                                                    \
-  { counters->count_of_FIXED_ARRAY_##name(), "count_of_FIXED_ARRAY_" #name } \
-  , {counters->size_of_FIXED_ARRAY_##name(), "size_of_FIXED_ARRAY_" #name},
-
-                  FIXED_ARRAY_SUB_INSTANCE_TYPE_LIST(ADD_COUNTER)
-#undef ADD_COUNTER
   };  // End counter_list array.
 
   for (size_t i = 0; i < arraysize(counter_list); i++) {
@@ -112,29 +94,24 @@ void StatisticsExtension::GetCounters(
   }
 
   struct StatisticNumber {
-    intptr_t number;
+    size_t number;
     const char* name;
   };
 
   const StatisticNumber numbers[] = {
-      {static_cast<intptr_t>(heap->memory_allocator()->Size()),
-       "total_committed_bytes"},
+      {heap->memory_allocator()->Size(), "total_committed_bytes"},
       {heap->new_space()->Size(), "new_space_live_bytes"},
       {heap->new_space()->Available(), "new_space_available_bytes"},
-      {static_cast<intptr_t>(heap->new_space()->CommittedMemory()),
-       "new_space_commited_bytes"},
+      {heap->new_space()->CommittedMemory(), "new_space_commited_bytes"},
       {heap->old_space()->Size(), "old_space_live_bytes"},
       {heap->old_space()->Available(), "old_space_available_bytes"},
-      {static_cast<intptr_t>(heap->old_space()->CommittedMemory()),
-       "old_space_commited_bytes"},
+      {heap->old_space()->CommittedMemory(), "old_space_commited_bytes"},
       {heap->code_space()->Size(), "code_space_live_bytes"},
       {heap->code_space()->Available(), "code_space_available_bytes"},
-      {static_cast<intptr_t>(heap->code_space()->CommittedMemory()),
-       "code_space_commited_bytes"},
+      {heap->code_space()->CommittedMemory(), "code_space_commited_bytes"},
       {heap->lo_space()->Size(), "lo_space_live_bytes"},
       {heap->lo_space()->Available(), "lo_space_available_bytes"},
-      {static_cast<intptr_t>(heap->lo_space()->CommittedMemory()),
-       "lo_space_commited_bytes"},
+      {heap->lo_space()->CommittedMemory(), "lo_space_commited_bytes"},
   };
 
   for (size_t i = 0; i < arraysize(numbers); i++) {
@@ -149,17 +126,17 @@ void StatisticsExtension::GetCounters(
   HeapObject* obj;
   int reloc_info_total = 0;
   int source_position_table_total = 0;
-  while ((obj = iterator.next())) {
+  while ((obj = iterator.next()) != nullptr) {
     if (obj->IsCode()) {
       Code* code = Code::cast(obj);
       reloc_info_total += code->relocation_info()->Size();
-      ByteArray* source_position_table = code->source_position_table();
+      ByteArray* source_position_table = code->SourcePositionTable();
       if (source_position_table->length() > 0) {
-        source_position_table_total += code->source_position_table()->Size();
+        source_position_table_total += code->SourcePositionTable()->Size();
       }
     } else if (obj->IsBytecodeArray()) {
       source_position_table_total +=
-          BytecodeArray::cast(obj)->source_position_table()->Size();
+          BytecodeArray::cast(obj)->SourcePositionTable()->Size();
     }
   }
 

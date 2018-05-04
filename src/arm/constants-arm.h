@@ -9,6 +9,7 @@
 
 #include "src/base/logging.h"
 #include "src/base/macros.h"
+#include "src/boxed-float.h"
 #include "src/globals.h"
 
 // ARM EABI is required.
@@ -29,12 +30,9 @@ inline int EncodeConstantPoolLength(int length) {
   return ((length & 0xfff0) << 4) | (length & 0xf);
 }
 inline int DecodeConstantPoolLength(int instr) {
-  DCHECK((instr & kConstantPoolMarkerMask) == kConstantPoolMarker);
+  DCHECK_EQ(instr & kConstantPoolMarkerMask, kConstantPoolMarker);
   return ((instr >> 4) & 0xfff0) | (instr & 0xf);
 }
-
-// Used in code age prologue - ldr(pc, MemOperand(pc, -4))
-const int kCodeAgeJumpInstruction = 0xe51ff004;
 
 // Number of registers in normal ARM mode.
 const int kNumRegisters = 16;
@@ -190,6 +188,7 @@ enum {
   B7 = 1 << 7,
   B8 = 1 << 8,
   B9 = 1 << 9,
+  B10 = 1 << 10,
   B12 = 1 << 12,
   B16 = 1 << 16,
   B17 = 1 << 17,
@@ -217,7 +216,6 @@ enum {
   kOff12Mask = (1 << 12) - 1,
   kOff8Mask = (1 << 8) - 1
 };
-
 
 enum BarrierOption {
   OSHLD = 0x1,
@@ -324,31 +322,38 @@ enum LFlag {
   Short = 0 << 22   // Short load/store coprocessor.
 };
 
+// Neon sizes.
+enum NeonSize { Neon8 = 0x0, Neon16 = 0x1, Neon32 = 0x2, Neon64 = 0x3 };
 
 // NEON data type
 enum NeonDataType {
-  NeonS8 = 0x1,   // U = 0, imm3 = 0b001
-  NeonS16 = 0x2,  // U = 0, imm3 = 0b010
-  NeonS32 = 0x4,  // U = 0, imm3 = 0b100
-  NeonU8 = 1 << 24 | 0x1,   // U = 1, imm3 = 0b001
-  NeonU16 = 1 << 24 | 0x2,  // U = 1, imm3 = 0b010
-  NeonU32 = 1 << 24 | 0x4,   // U = 1, imm3 = 0b100
-  NeonDataTypeSizeMask = 0x7,
-  NeonDataTypeUMask = 1 << 24
+  NeonS8 = 0,
+  NeonS16 = 1,
+  NeonS32 = 2,
+  // Gap to make it easier to extract U and size.
+  NeonU8 = 4,
+  NeonU16 = 5,
+  NeonU32 = 6
 };
+
+inline int NeonU(NeonDataType dt) { return static_cast<int>(dt) >> 2; }
+inline int NeonSz(NeonDataType dt) { return static_cast<int>(dt) & 0x3; }
+
+// Convert sizes to data types (U bit is clear).
+inline NeonDataType NeonSizeToDataType(NeonSize size) {
+  DCHECK_NE(Neon64, size);
+  return static_cast<NeonDataType>(size);
+}
+
+inline NeonSize NeonDataTypeToSize(NeonDataType dt) {
+  return static_cast<NeonSize>(NeonSz(dt));
+}
 
 enum NeonListType {
   nlt_1 = 0x7,
   nlt_2 = 0xA,
   nlt_3 = 0x6,
   nlt_4 = 0x2
-};
-
-enum NeonSize {
-  Neon8 = 0x0,
-  Neon16 = 0x1,
-  Neon32 = 0x2,
-  Neon64 = 0x3
 };
 
 // -----------------------------------------------------------------------------
@@ -374,9 +379,9 @@ const int32_t  kDefaultStopCode = -1;
 // Type of VFP register. Determines register encoding.
 enum VFPRegPrecision {
   kSinglePrecision = 0,
-  kDoublePrecision = 1
+  kDoublePrecision = 1,
+  kSimd128Precision = 2
 };
-
 
 // VFP FPSCR constants.
 enum VFPConversionMode {
@@ -636,8 +641,8 @@ class Instruction {
                                            && (Bit(20) == 0)
                                            && ((Bit(7) == 0)); }
 
-  // Test for a nop instruction, which falls under type 1.
-  inline bool IsNopType1() const { return Bits(24, 0) == 0x0120F000; }
+  // Test for nop-like instructions which fall under type 1.
+  inline bool IsNopLikeType1() const { return Bits(24, 8) == 0x120F0; }
 
   // Test for a stop instruction.
   inline bool IsStop() const {
@@ -655,27 +660,34 @@ class Instruction {
   inline bool HasLink() const { return LinkValue() == 1; }
 
   // Decode the double immediate from a vmov instruction.
-  double DoubleImmedVmov() const;
+  Float64 DoubleImmedVmov() const;
 
   // Instructions are read of out a code stream. The only way to get a
   // reference to an instruction is to convert a pointer. There is no way
   // to allocate or create instances of class Instruction.
   // Use the At(pc) function to create references to Instruction.
-  static Instruction* At(byte* pc) {
+  static Instruction* At(Address pc) {
     return reinterpret_cast<Instruction*>(pc);
   }
 
 
  private:
-  // Join split register codes, depending on single or double precision.
+  // Join split register codes, depending on register precision.
   // four_bit is the position of the least-significant bit of the four
   // bit specifier. one_bit is the position of the additional single bit
   // specifier.
   inline int VFPGlueRegValue(VFPRegPrecision pre, int four_bit, int one_bit) {
     if (pre == kSinglePrecision) {
       return (Bits(four_bit + 3, four_bit) << 1) | Bit(one_bit);
+    } else {
+      int reg_num = (Bit(one_bit) << 4) | Bits(four_bit + 3, four_bit);
+      if (pre == kDoublePrecision) {
+        return reg_num;
+      }
+      DCHECK_EQ(kSimd128Precision, pre);
+      DCHECK_EQ(reg_num & 1, 0);
+      return reg_num / 2;
     }
-    return (Bit(one_bit) << 4) | Bits(four_bit + 3, four_bit);
   }
 
   // We need to prevent the creation of instances of class Instruction.

@@ -11,7 +11,9 @@
 #include "include/libplatform/libplatform.h"
 #include "include/v8.h"
 
+#include "src/api.h"
 #include "src/base/logging.h"
+#include "src/objects-inl.h"
 #include "src/runtime/runtime.h"
 
 #include "src/interpreter/bytecode-array-iterator.h"
@@ -24,6 +26,21 @@
 namespace v8 {
 namespace internal {
 namespace interpreter {
+
+static const char* NameForNativeContextIntrinsicIndex(uint32_t idx) {
+  switch (idx) {
+#define COMPARE_NATIVE_CONTEXT_INTRINSIC_IDX(NAME, Type, name) \
+  case Context::NAME:                                          \
+    return #name;
+
+    NATIVE_CONTEXT_INTRINSIC_FUNCTIONS(COMPARE_NATIVE_CONTEXT_INTRINSIC_IDX)
+
+    default:
+      break;
+  }
+
+  return "UnknownIntrinsicIndex";
+}
 
 // static
 const char* const BytecodeExpectationsPrinter::kDefaultTopFunctionName =
@@ -55,12 +72,17 @@ v8::Local<v8::Script> BytecodeExpectationsPrinter::CompileScript(
 
 v8::Local<v8::Module> BytecodeExpectationsPrinter::CompileModule(
     const char* program) const {
-  v8::ScriptCompiler::Source source(V8StringFromUTF8(program));
+  ScriptOrigin origin(
+      Local<v8::Value>(), Local<v8::Integer>(), Local<v8::Integer>(),
+      Local<v8::Boolean>(), Local<v8::Integer>(), Local<v8::Value>(),
+      Local<v8::Boolean>(), Local<v8::Boolean>(), True(isolate_));
+  v8::ScriptCompiler::Source source(V8StringFromUTF8(program), origin);
   return v8::ScriptCompiler::CompileModule(isolate_, &source).ToLocalChecked();
 }
 
 void BytecodeExpectationsPrinter::Run(v8::Local<v8::Script> script) const {
-  (void)script->Run(isolate_->GetCurrentContext());
+  MaybeLocal<Value> result = script->Run(isolate_->GetCurrentContext());
+  USE(result);
 }
 
 i::Handle<v8::internal::BytecodeArray>
@@ -74,7 +96,7 @@ BytecodeExpectationsPrinter::GetBytecodeArrayForGlobal(
       i::Handle<i::JSFunction>::cast(v8::Utils::OpenHandle(*function));
 
   i::Handle<i::BytecodeArray> bytecodes =
-      i::handle(js_function->shared()->bytecode_array(), i_isolate());
+      i::handle(js_function->shared()->GetBytecodeArray(), i_isolate());
 
   return bytecodes;
 }
@@ -83,16 +105,16 @@ i::Handle<i::BytecodeArray>
 BytecodeExpectationsPrinter::GetBytecodeArrayForModule(
     v8::Local<v8::Module> module) const {
   i::Handle<i::Module> i_module = v8::Utils::OpenHandle(*module);
-  CHECK(!i_module->instantiated());
-  return i::handle(SharedFunctionInfo::cast(i_module->code())->bytecode_array(),
-                   i_isolate());
+  return i::handle(
+      SharedFunctionInfo::cast(i_module->code())->GetBytecodeArray(),
+      i_isolate());
 }
 
 i::Handle<i::BytecodeArray>
 BytecodeExpectationsPrinter::GetBytecodeArrayForScript(
     v8::Local<v8::Script> script) const {
   i::Handle<i::JSFunction> js_function = v8::Utils::OpenHandle(*script);
-  return i::handle(js_function->shared()->bytecode_array(), i_isolate());
+  return i::handle(js_function->shared()->GetBytecodeArray(), i_isolate());
 }
 
 void BytecodeExpectationsPrinter::PrintEscapedString(
@@ -139,9 +161,7 @@ void BytecodeExpectationsPrinter::PrintBytecodeOperand(
     Register register_value = bytecode_iterator.GetRegisterOperand(op_index);
     stream << 'R';
     if (op_size != OperandSize::kByte) stream << size_tag;
-    if (register_value.is_new_target()) {
-      stream << "(new_target)";
-    } else if (register_value.is_current_context()) {
+    if (register_value.is_current_context()) {
       stream << "(context)";
     } else if (register_value.is_function_closure()) {
       stream << "(closure)";
@@ -156,34 +176,46 @@ void BytecodeExpectationsPrinter::PrintBytecodeOperand(
       stream << '(' << register_value.index() << ')';
     }
   } else {
-    stream << 'U' << size_tag << '(';
-
     switch (op_type) {
       case OperandType::kFlag8:
+        stream << 'U' << size_tag << '(';
         stream << bytecode_iterator.GetFlagOperand(op_index);
         break;
-      case OperandType::kIdx:
+      case OperandType::kIdx: {
+        stream << 'U' << size_tag << '(';
         stream << bytecode_iterator.GetIndexOperand(op_index);
         break;
+      }
       case OperandType::kUImm:
+        stream << 'U' << size_tag << '(';
         stream << bytecode_iterator.GetUnsignedImmediateOperand(op_index);
         break;
       case OperandType::kImm:
+        stream << 'I' << size_tag << '(';
         stream << bytecode_iterator.GetImmediateOperand(op_index);
         break;
       case OperandType::kRegCount:
+        stream << 'U' << size_tag << '(';
         stream << bytecode_iterator.GetRegisterCountOperand(op_index);
         break;
       case OperandType::kRuntimeId: {
+        stream << 'U' << size_tag << '(';
         Runtime::FunctionId id =
             bytecode_iterator.GetRuntimeIdOperand(op_index);
         stream << "Runtime::k" << i::Runtime::FunctionForId(id)->name;
         break;
       }
       case OperandType::kIntrinsicId: {
+        stream << 'U' << size_tag << '(';
         Runtime::FunctionId id =
             bytecode_iterator.GetIntrinsicIdOperand(op_index);
         stream << "Runtime::k" << i::Runtime::FunctionForId(id)->name;
+        break;
+      }
+      case OperandType::kNativeContextIndex: {
+        stream << 'U' << size_tag << '(';
+        uint32_t idx = bytecode_iterator.GetNativeContextIndexOperand(op_index);
+        stream << "%" << NameForNativeContextIntrinsicIndex(idx);
         break;
       }
       default:
@@ -219,7 +251,7 @@ void BytecodeExpectationsPrinter::PrintSourcePosition(
   if (!source_iterator.done() &&
       source_iterator.code_offset() == bytecode_offset) {
     stream << "/* " << std::setw(kPositionWidth)
-           << source_iterator.source_position();
+           << source_iterator.source_position().ScriptOffset();
     if (source_iterator.is_statement()) {
       stream << " S> */ ";
     } else {
@@ -276,7 +308,7 @@ void BytecodeExpectationsPrinter::PrintBytecodeSequence(
          << "\nbytecodes: [\n";
 
   SourcePositionTableIterator source_iterator(
-      bytecode_array->source_position_table());
+      bytecode_array->SourcePositionTable());
   BytecodeArrayIterator bytecode_iterator(bytecode_array);
   for (; !bytecode_iterator.done(); bytecode_iterator.Advance()) {
     stream << kIndent;
@@ -318,11 +350,11 @@ void BytecodeExpectationsPrinter::PrintCodeSnippet(
 void BytecodeExpectationsPrinter::PrintHandlers(
     std::ostream& stream, i::Handle<i::BytecodeArray> bytecode_array) const {
   stream << "handlers: [\n";
-  HandlerTable* table = HandlerTable::cast(bytecode_array->handler_table());
-  for (int i = 0, num_entries = table->NumberOfRangeEntries(); i < num_entries;
+  HandlerTable table(*bytecode_array);
+  for (int i = 0, num_entries = table.NumberOfRangeEntries(); i < num_entries;
        ++i) {
-    stream << "  [" << table->GetRangeStart(i) << ", " << table->GetRangeEnd(i)
-           << ", " << table->GetRangeHandler(i) << "],\n";
+    stream << "  [" << table.GetRangeStart(i) << ", " << table.GetRangeEnd(i)
+           << ", " << table.GetRangeHandler(i) << "],\n";
   }
   stream << "]\n";
 }

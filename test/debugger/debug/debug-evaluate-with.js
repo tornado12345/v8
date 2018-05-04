@@ -24,13 +24,15 @@
 // THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
+// Flags: --noanalyze-environment-liveness
 
 
 Debug = debug.Debug
 
-listenerComplete = false;
-exception = false;
-breakPointCount = 0;
+let listenerComplete = false;
+let exceptionThrown = false;
+let breakPointCount = 0;
 
 function listener(event, exec_state, event_data, data) {
   try {
@@ -51,7 +53,7 @@ function listener(event, exec_state, event_data, data) {
       }
     }
   } catch (e) {
-    exception = e
+    exceptionThrown = true;
   };
 };
 
@@ -77,4 +79,4 @@ eval("with({bar:'with'}) { (function g() { var foo = 'local'; debugger; })(); }"
 
 // Make sure that the debug event listener vas invoked.
 assertEquals(3, breakPointCount);
-assertFalse(exception, "exception in listener")
+assertFalse(exceptionThrown, "exception in listener");

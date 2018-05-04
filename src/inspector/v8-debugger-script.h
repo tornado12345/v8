@@ -27,71 +27,83 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef V8_INSPECTOR_V8DEBUGGERSCRIPT_H_
-#define V8_INSPECTOR_V8DEBUGGERSCRIPT_H_
+#ifndef V8_INSPECTOR_V8_DEBUGGER_SCRIPT_H_
+#define V8_INSPECTOR_V8_DEBUGGER_SCRIPT_H_
 
 #include "src/base/macros.h"
 #include "src/inspector/string-16.h"
+#include "src/inspector/string-util.h"
 
 #include "include/v8.h"
 #include "src/debug/debug-interface.h"
 
 namespace v8_inspector {
 
+// Forward declaration.
+class WasmTranslation;
+
 class V8DebuggerScript {
  public:
-  V8DebuggerScript(v8::Isolate* isolate,
-                   v8::Local<v8::DebugInterface::Script> script,
-                   bool isLiveEdit);
-  ~V8DebuggerScript();
+  static std::unique_ptr<V8DebuggerScript> Create(
+      v8::Isolate* isolate, v8::Local<v8::debug::Script> script,
+      bool isLiveEdit);
+  static std::unique_ptr<V8DebuggerScript> CreateWasm(
+      v8::Isolate* isolate, WasmTranslation* wasmTranslation,
+      v8::Local<v8::debug::WasmScript> underlyingScript, String16 id,
+      String16 url, int functionIndex);
+
+  virtual ~V8DebuggerScript();
 
   const String16& scriptId() const { return m_id; }
   const String16& url() const { return m_url; }
   bool hasSourceURL() const { return !m_sourceURL.isEmpty(); }
   const String16& sourceURL() const;
-  const String16& sourceMappingURL() const { return m_sourceMappingURL; }
-  v8::Local<v8::String> source(v8::Isolate*) const;
-  const String16& hash() const { return m_hash; }
-  int startLine() const { return m_startLine; }
-  int startColumn() const { return m_startColumn; }
-  int endLine() const { return m_endLine; }
-  int endColumn() const { return m_endColumn; }
+  virtual const String16& sourceMappingURL() const = 0;
+  virtual const String16& source() const = 0;
+  virtual const String16& hash() const = 0;
+  virtual int startLine() const = 0;
+  virtual int startColumn() const = 0;
+  virtual int endLine() const = 0;
+  virtual int endColumn() const = 0;
   int executionContextId() const { return m_executionContextId; }
-  const String16& executionContextAuxData() const {
-    return m_executionContextAuxData;
-  }
-  bool isLiveEdit() const { return m_isLiveEdit; }
+  virtual bool isLiveEdit() const = 0;
+  virtual bool isModule() const = 0;
+  virtual bool isSourceLoadedLazily() const = 0;
 
   void setSourceURL(const String16&);
-  void setSourceMappingURL(const String16&);
-  void setSource(v8::Local<v8::String>);
+  virtual void setSourceMappingURL(const String16&) = 0;
+  virtual void setSource(const String16& source, bool preview,
+                         bool* stackChanged) = 0;
 
-  bool getPossibleBreakpoints(
-      const v8::DebugInterface::Location& start,
-      const v8::DebugInterface::Location& end,
-      std::vector<v8::DebugInterface::Location>* locations);
+  virtual bool getPossibleBreakpoints(
+      const v8::debug::Location& start, const v8::debug::Location& end,
+      bool ignoreNestedFunctions,
+      std::vector<v8::debug::BreakLocation>* locations) = 0;
+  virtual void resetBlackboxedStateCache() = 0;
 
- private:
+  static const int kNoOffset = -1;
+  virtual int offset(int lineNumber, int columnNumber) const = 0;
+  virtual v8::debug::Location location(int offset) const = 0;
+
+  virtual bool setBreakpoint(const String16& condition,
+                             v8::debug::Location* location, int* id) const = 0;
+
+ protected:
+  V8DebuggerScript(v8::Isolate*, String16 id, String16 url);
+
+  virtual v8::Local<v8::debug::Script> script() const = 0;
+
   String16 m_id;
   String16 m_url;
   String16 m_sourceURL;
-  String16 m_sourceMappingURL;
-  v8::Global<v8::String> m_source;
-  String16 m_hash;
-  int m_startLine;
-  int m_startColumn;
-  int m_endLine;
-  int m_endColumn;
-  int m_executionContextId;
-  String16 m_executionContextAuxData;
-  bool m_isLiveEdit;
+  int m_executionContextId = 0;
 
   v8::Isolate* m_isolate;
-  v8::Global<v8::DebugInterface::Script> m_script;
 
+ private:
   DISALLOW_COPY_AND_ASSIGN(V8DebuggerScript);
 };
 
 }  // namespace v8_inspector
 
-#endif  // V8_INSPECTOR_V8DEBUGGERSCRIPT_H_
+#endif  // V8_INSPECTOR_V8_DEBUGGER_SCRIPT_H_

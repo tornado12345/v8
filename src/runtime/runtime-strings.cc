@@ -5,12 +5,62 @@
 #include "src/runtime/runtime-utils.h"
 
 #include "src/arguments.h"
+#include "src/conversions.h"
+#include "src/counters.h"
+#include "src/objects-inl.h"
 #include "src/regexp/jsregexp-inl.h"
+#include "src/regexp/regexp-utils.h"
 #include "src/string-builder.h"
 #include "src/string-search.h"
 
 namespace v8 {
 namespace internal {
+
+RUNTIME_FUNCTION(Runtime_GetSubstitution) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(5, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(String, matched, 0);
+  CONVERT_ARG_HANDLE_CHECKED(String, subject, 1);
+  CONVERT_SMI_ARG_CHECKED(position, 2);
+  CONVERT_ARG_HANDLE_CHECKED(String, replacement, 3);
+  CONVERT_SMI_ARG_CHECKED(start_index, 4);
+
+  // A simple match without captures.
+  class SimpleMatch : public String::Match {
+   public:
+    SimpleMatch(Handle<String> match, Handle<String> prefix,
+                Handle<String> suffix)
+        : match_(match), prefix_(prefix), suffix_(suffix) {}
+
+    Handle<String> GetMatch() override { return match_; }
+    Handle<String> GetPrefix() override { return prefix_; }
+    Handle<String> GetSuffix() override { return suffix_; }
+
+    int CaptureCount() override { return 0; }
+    bool HasNamedCaptures() override { return false; }
+    MaybeHandle<String> GetCapture(int i, bool* capture_exists) override {
+      *capture_exists = false;
+      return match_;  // Return arbitrary string handle.
+    }
+    MaybeHandle<String> GetNamedCapture(Handle<String> name,
+                                        CaptureState* state) override {
+      UNREACHABLE();
+    }
+
+   private:
+    Handle<String> match_, prefix_, suffix_;
+  };
+
+  Handle<String> prefix =
+      isolate->factory()->NewSubString(subject, 0, position);
+  Handle<String> suffix = isolate->factory()->NewSubString(
+      subject, position + matched->length(), subject->length());
+  SimpleMatch match(matched, prefix, suffix);
+
+  RETURN_RESULT_OR_FAILURE(
+      isolate,
+      String::GetSubstitution(isolate, &match, replacement, start_index));
+}
 
 // This may return an empty MaybeHandle if an exception is thrown or
 // we abort due to reaching the recursion limit.
@@ -57,10 +107,9 @@ MaybeHandle<String> StringReplaceOneCharWithString(
   }
 }
 
-
 RUNTIME_FUNCTION(Runtime_StringReplaceOneCharWithString) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 3);
+  DCHECK_EQ(3, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, subject, 0);
   CONVERT_ARG_HANDLE_CHECKED(String, search, 1);
   CONVERT_ARG_HANDLE_CHECKED(String, replace, 2);
@@ -86,64 +135,106 @@ RUNTIME_FUNCTION(Runtime_StringReplaceOneCharWithString) {
   return isolate->StackOverflow();
 }
 
+RUNTIME_FUNCTION(Runtime_StringTrim) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(2, args.length());
+  Handle<String> string = args.at<String>(0);
+  CONVERT_SMI_ARG_CHECKED(mode, 1);
+  String::TrimMode trim_mode = static_cast<String::TrimMode>(mode);
+  return *String::Trim(string, trim_mode);
+}
 
+// ES6 #sec-string.prototype.includes
+// String.prototype.includes(searchString [, position])
+RUNTIME_FUNCTION(Runtime_StringIncludes) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(3, args.length());
+
+  Handle<Object> receiver = args.at(0);
+  if (receiver->IsNullOrUndefined(isolate)) {
+    THROW_NEW_ERROR_RETURN_FAILURE(
+        isolate, NewTypeError(MessageTemplate::kCalledOnNullOrUndefined,
+                              isolate->factory()->NewStringFromAsciiChecked(
+                                  "String.prototype.includes")));
+  }
+  Handle<String> receiver_string;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, receiver_string,
+                                     Object::ToString(isolate, receiver));
+
+  // Check if the search string is a regExp and fail if it is.
+  Handle<Object> search = args.at(1);
+  Maybe<bool> is_reg_exp = RegExpUtils::IsRegExp(isolate, search);
+  if (is_reg_exp.IsNothing()) {
+    DCHECK(isolate->has_pending_exception());
+    return isolate->heap()->exception();
+  }
+  if (is_reg_exp.FromJust()) {
+    THROW_NEW_ERROR_RETURN_FAILURE(
+        isolate, NewTypeError(MessageTemplate::kFirstArgumentNotRegExp,
+                              isolate->factory()->NewStringFromStaticChars(
+                                  "String.prototype.includes")));
+  }
+  Handle<String> search_string;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, search_string,
+                                     Object::ToString(isolate, args.at(1)));
+  Handle<Object> position;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, position,
+                                     Object::ToInteger(isolate, args.at(2)));
+
+  uint32_t index = receiver_string->ToValidIndex(*position);
+  int index_in_str =
+      String::IndexOf(isolate, receiver_string, search_string, index);
+  return *isolate->factory()->ToBoolean(index_in_str != -1);
+}
+
+// ES6 #sec-string.prototype.indexof
+// String.prototype.indexOf(searchString [, position])
 RUNTIME_FUNCTION(Runtime_StringIndexOf) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 3);
-  return String::IndexOf(isolate, args.at<Object>(0), args.at<Object>(1),
-                         args.at<Object>(2));
+  DCHECK_EQ(3, args.length());
+  return String::IndexOf(isolate, args.at(0), args.at(1), args.at(2));
+}
+
+// ES6 #sec-string.prototype.indexof
+// String.prototype.indexOf(searchString, position)
+// Fast version that assumes that does not perform conversions of the incoming
+// arguments.
+RUNTIME_FUNCTION(Runtime_StringIndexOfUnchecked) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(3, args.length());
+  Handle<String> receiver_string = args.at<String>(0);
+  Handle<String> search_string = args.at<String>(1);
+  int index = std::min(std::max(args.smi_at(2), 0), receiver_string->length());
+
+  return Smi::FromInt(String::IndexOf(isolate, receiver_string, search_string,
+                                      static_cast<uint32_t>(index)));
 }
 
 RUNTIME_FUNCTION(Runtime_StringLastIndexOf) {
   HandleScope handle_scope(isolate);
-  return String::LastIndexOf(isolate, args.at<Object>(0), args.at<Object>(1),
+  return String::LastIndexOf(isolate, args.at(0), args.at(1),
                              isolate->factory()->undefined_value());
 }
 
-RUNTIME_FUNCTION(Runtime_SubString) {
+RUNTIME_FUNCTION(Runtime_StringSubstring) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 3);
-
+  DCHECK_EQ(3, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, string, 0);
-  int start, end;
-  // We have a fast integer-only case here to avoid a conversion to double in
-  // the common case where from and to are Smis.
-  if (args[1]->IsSmi() && args[2]->IsSmi()) {
-    CONVERT_SMI_ARG_CHECKED(from_number, 1);
-    CONVERT_SMI_ARG_CHECKED(to_number, 2);
-    start = from_number;
-    end = to_number;
-  } else if (args[1]->IsNumber() && args[2]->IsNumber()) {
-    CONVERT_DOUBLE_ARG_CHECKED(from_number, 1);
-    CONVERT_DOUBLE_ARG_CHECKED(to_number, 2);
-    start = FastD2IChecked(from_number);
-    end = FastD2IChecked(to_number);
-  } else {
-    return isolate->ThrowIllegalOperation();
-  }
-  // The following condition is intentionally robust because the SubStringStub
-  // delegates here and we test this in cctest/test-strings/RobustSubStringStub.
-  if (end < start || start < 0 || end > string->length()) {
-    return isolate->ThrowIllegalOperation();
-  }
+  CONVERT_INT32_ARG_CHECKED(start, 1);
+  CONVERT_INT32_ARG_CHECKED(end, 2);
+  DCHECK_LE(0, start);
+  DCHECK_LE(start, end);
+  DCHECK_LE(end, string->length());
   isolate->counters()->sub_string_runtime()->Increment();
-
   return *isolate->factory()->NewSubString(string, start, end);
 }
 
-
 RUNTIME_FUNCTION(Runtime_StringAdd) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 2);
-  CONVERT_ARG_HANDLE_CHECKED(Object, obj1, 0);
-  CONVERT_ARG_HANDLE_CHECKED(Object, obj2, 1);
+  DCHECK_EQ(2, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(String, str1, 0);
+  CONVERT_ARG_HANDLE_CHECKED(String, str2, 1);
   isolate->counters()->string_add_runtime()->Increment();
-  MaybeHandle<String> maybe_str1(Object::ToString(isolate, obj1));
-  MaybeHandle<String> maybe_str2(Object::ToString(isolate, obj2));
-  Handle<String> str1;
-  Handle<String> str2;
-  maybe_str1.ToHandle(&str1);
-  maybe_str2.ToHandle(&str2);
   RETURN_RESULT_OR_FAILURE(isolate,
                            isolate->factory()->NewConsString(str1, str2));
 }
@@ -151,15 +242,14 @@ RUNTIME_FUNCTION(Runtime_StringAdd) {
 
 RUNTIME_FUNCTION(Runtime_InternalizeString) {
   HandleScope handles(isolate);
-  DCHECK(args.length() == 1);
+  DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, string, 0);
   return *isolate->factory()->InternalizeString(string);
 }
 
-
-RUNTIME_FUNCTION(Runtime_StringCharCodeAtRT) {
+RUNTIME_FUNCTION(Runtime_StringCharCodeAt) {
   HandleScope handle_scope(isolate);
-  DCHECK(args.length() == 2);
+  DCHECK_EQ(2, args.length());
 
   CONVERT_ARG_HANDLE_CHECKED(String, subject, 0);
   CONVERT_NUMBER_CHECKED(uint32_t, i, Uint32, args[1]);
@@ -176,31 +266,9 @@ RUNTIME_FUNCTION(Runtime_StringCharCodeAtRT) {
   return Smi::FromInt(subject->Get(i));
 }
 
-
-RUNTIME_FUNCTION(Runtime_StringCompare) {
-  HandleScope handle_scope(isolate);
-  DCHECK_EQ(2, args.length());
-  CONVERT_ARG_HANDLE_CHECKED(String, x, 0);
-  CONVERT_ARG_HANDLE_CHECKED(String, y, 1);
-  isolate->counters()->string_compare_runtime()->Increment();
-  switch (String::Compare(x, y)) {
-    case ComparisonResult::kLessThan:
-      return Smi::FromInt(LESS);
-    case ComparisonResult::kEqual:
-      return Smi::FromInt(EQUAL);
-    case ComparisonResult::kGreaterThan:
-      return Smi::FromInt(GREATER);
-    case ComparisonResult::kUndefined:
-      break;
-  }
-  UNREACHABLE();
-  return Smi::kZero;
-}
-
-
 RUNTIME_FUNCTION(Runtime_StringBuilderConcat) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 3);
+  DCHECK_EQ(3, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSArray, array, 0);
   int32_t array_length;
   if (!args[1]->ToInt32(&array_length)) {
@@ -210,17 +278,17 @@ RUNTIME_FUNCTION(Runtime_StringBuilderConcat) {
 
   size_t actual_array_length = 0;
   CHECK(TryNumberToSize(array->length(), &actual_array_length));
-  CHECK(array_length >= 0);
+  CHECK_GE(array_length, 0);
   CHECK(static_cast<size_t>(array_length) <= actual_array_length);
 
   // This assumption is used by the slice encoding in one or two smis.
-  DCHECK(Smi::kMaxValue >= String::kMaxLength);
+  DCHECK_GE(Smi::kMaxValue, String::kMaxLength);
 
   CHECK(array->HasFastElements());
   JSObject::EnsureCanContainHeapObjectElements(array);
 
   int special_length = special->length();
-  if (!array->HasFastObjectElements()) {
+  if (!array->HasObjectElements()) {
     return isolate->Throw(isolate->heap()->illegal_argument_string());
   }
 
@@ -247,6 +315,9 @@ RUNTIME_FUNCTION(Runtime_StringBuilderConcat) {
   if (length == -1) {
     return isolate->Throw(isolate->heap()->illegal_argument_string());
   }
+  if (length == 0) {
+    return isolate->heap()->empty_string();
+  }
 
   if (one_byte) {
     Handle<SeqOneByteString> answer;
@@ -267,18 +338,17 @@ RUNTIME_FUNCTION(Runtime_StringBuilderConcat) {
   }
 }
 
-
 RUNTIME_FUNCTION(Runtime_StringBuilderJoin) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 3);
+  DCHECK_EQ(3, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSArray, array, 0);
   int32_t array_length;
   if (!args[1]->ToInt32(&array_length)) {
     THROW_NEW_ERROR_RETURN_FAILURE(isolate, NewInvalidStringLengthError());
   }
   CONVERT_ARG_HANDLE_CHECKED(String, separator, 2);
-  CHECK(array->HasFastObjectElements());
-  CHECK(array_length >= 0);
+  CHECK(array->HasObjectElements());
+  CHECK_GE(array_length, 0);
 
   Handle<FixedArray> fixed_array(FixedArray::cast(array->elements()));
   if (fixed_array->length() < array_length) {
@@ -294,7 +364,7 @@ RUNTIME_FUNCTION(Runtime_StringBuilderJoin) {
   }
 
   int separator_length = separator->length();
-  CHECK(separator_length > 0);
+  CHECK_GT(separator_length, 0);
   int max_nof_separators =
       (String::kMaxLength + separator_length - 1) / separator_length;
   if (max_nof_separators < (array_length - 1)) {
@@ -401,26 +471,25 @@ static void JoinSparseArrayWithSeparator(FixedArray* elements,
   int last_array_index = static_cast<int>(array_length - 1);
   // Array length must be representable as a signed 32-bit number,
   // otherwise the total string length would have been too large.
-  DCHECK(array_length <= 0x7fffffff);  // Is int32_t.
+  DCHECK_LE(array_length, 0x7FFFFFFF);  // Is int32_t.
   int repeat = last_array_index - previous_separator_position;
   WriteRepeatToFlat<Char>(separator, buffer, cursor, repeat, separator_length);
   cursor += repeat * separator_length;
   DCHECK(cursor <= buffer.length());
 }
 
-
 RUNTIME_FUNCTION(Runtime_SparseJoinWithSeparator) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 3);
+  DCHECK_EQ(3, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSArray, elements_array, 0);
   CONVERT_NUMBER_CHECKED(uint32_t, array_length, Uint32, args[1]);
   CONVERT_ARG_HANDLE_CHECKED(String, separator, 2);
   // elements_array is fast-mode JSarray of alternating positions
   // (increasing order) and strings.
-  CHECK(elements_array->HasFastSmiOrObjectElements());
+  CHECK(elements_array->HasSmiOrObjectElements());
   // array_length is length of original array (used to add separators);
   // separator is string to put between elements. Assumed to be non-empty.
-  CHECK(array_length > 0);
+  CHECK_GT(array_length, 0);
 
   // Find total length of join result.
   int string_length = 0;
@@ -428,7 +497,7 @@ RUNTIME_FUNCTION(Runtime_SparseJoinWithSeparator) {
   bool overflow = false;
   CONVERT_NUMBER_CHECKED(int, elements_length, Int32, elements_array->length());
   CHECK(elements_length <= elements_array->elements()->length());
-  CHECK((elements_length & 1) == 0);  // Even length.
+  CHECK_EQ(elements_length & 1, 0);  // Even length.
   FixedArray* elements = FixedArray::cast(elements_array->elements());
   {
     DisallowHeapAllocation no_gc;
@@ -449,7 +518,7 @@ RUNTIME_FUNCTION(Runtime_SparseJoinWithSeparator) {
 
   int separator_length = separator->length();
   if (!overflow && separator_length > 0) {
-    if (array_length <= 0x7fffffffu) {
+    if (array_length <= 0x7FFFFFFFu) {
       int separator_count = static_cast<int>(array_length) - 1;
       int remaining_length = String::kMaxLength - string_length;
       if ((remaining_length / separator_length) >= separator_count) {
@@ -461,7 +530,7 @@ RUNTIME_FUNCTION(Runtime_SparseJoinWithSeparator) {
     } else {
       // Nonempty separator and at least 2^31-1 separators necessary
       // means that the string is too large to create.
-      STATIC_ASSERT(String::kMaxLength < 0x7fffffff);
+      STATIC_ASSERT(String::kMaxLength < 0x7FFFFFFF);
       overflow = true;
     }
   }
@@ -493,7 +562,6 @@ RUNTIME_FUNCTION(Runtime_SparseJoinWithSeparator) {
   }
 }
 
-
 // Copies Latin1 characters to the given fixed array looking up
 // one-char strings in the cache. Gives up on the first char that is
 // not in the cache and fills the remainder with smi zeros. Returns
@@ -511,7 +579,7 @@ static int CopyCachedOneByteCharsToArray(Heap* heap, const uint8_t* chars,
     elements->set(i, value, mode);
   }
   if (i < length) {
-    DCHECK(Smi::kZero == 0);
+    static_assert(Smi::kZero == 0, "Can use memset since Smi::kZero is 0");
     memset(elements->data_start() + i, 0, kPointerSize * (length - i));
   }
 #ifdef DEBUG
@@ -524,12 +592,11 @@ static int CopyCachedOneByteCharsToArray(Heap* heap, const uint8_t* chars,
   return i;
 }
 
-
 // Converts a String to JSArray.
 // For example, "foo" => ["f", "o", "o"].
 RUNTIME_FUNCTION(Runtime_StringToArray) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 2);
+  DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, s, 0);
   CONVERT_NUMBER_CHECKED(uint32_t, limit, Uint32, args[1]);
 
@@ -565,304 +632,11 @@ RUNTIME_FUNCTION(Runtime_StringToArray) {
 
 #ifdef DEBUG
   for (int i = 0; i < length; ++i) {
-    DCHECK(String::cast(elements->get(i))->length() == 1);
+    DCHECK_EQ(String::cast(elements->get(i))->length(), 1);
   }
 #endif
 
   return *isolate->factory()->NewJSArrayWithElements(elements);
-}
-
-
-static inline bool ToUpperOverflows(uc32 character) {
-  // y with umlauts and the micro sign are the only characters that stop
-  // fitting into one-byte when converting to uppercase.
-  static const uc32 yuml_code = 0xff;
-  static const uc32 micro_code = 0xb5;
-  return (character == yuml_code || character == micro_code);
-}
-
-
-template <class Converter>
-MUST_USE_RESULT static Object* ConvertCaseHelper(
-    Isolate* isolate, String* string, SeqString* result, int result_length,
-    unibrow::Mapping<Converter, 128>* mapping) {
-  DisallowHeapAllocation no_gc;
-  // We try this twice, once with the assumption that the result is no longer
-  // than the input and, if that assumption breaks, again with the exact
-  // length.  This may not be pretty, but it is nicer than what was here before
-  // and I hereby claim my vaffel-is.
-  //
-  // NOTE: This assumes that the upper/lower case of an ASCII
-  // character is also ASCII.  This is currently the case, but it
-  // might break in the future if we implement more context and locale
-  // dependent upper/lower conversions.
-  bool has_changed_character = false;
-
-  // Convert all characters to upper case, assuming that they will fit
-  // in the buffer
-  StringCharacterStream stream(string);
-  unibrow::uchar chars[Converter::kMaxWidth];
-  // We can assume that the string is not empty
-  uc32 current = stream.GetNext();
-  bool ignore_overflow = Converter::kIsToLower || result->IsSeqTwoByteString();
-  for (int i = 0; i < result_length;) {
-    bool has_next = stream.HasMore();
-    uc32 next = has_next ? stream.GetNext() : 0;
-    int char_length = mapping->get(current, next, chars);
-    if (char_length == 0) {
-      // The case conversion of this character is the character itself.
-      result->Set(i, current);
-      i++;
-    } else if (char_length == 1 &&
-               (ignore_overflow || !ToUpperOverflows(current))) {
-      // Common case: converting the letter resulted in one character.
-      DCHECK(static_cast<uc32>(chars[0]) != current);
-      result->Set(i, chars[0]);
-      has_changed_character = true;
-      i++;
-    } else if (result_length == string->length()) {
-      bool overflows = ToUpperOverflows(current);
-      // We've assumed that the result would be as long as the
-      // input but here is a character that converts to several
-      // characters.  No matter, we calculate the exact length
-      // of the result and try the whole thing again.
-      //
-      // Note that this leaves room for optimization.  We could just
-      // memcpy what we already have to the result string.  Also,
-      // the result string is the last object allocated we could
-      // "realloc" it and probably, in the vast majority of cases,
-      // extend the existing string to be able to hold the full
-      // result.
-      int next_length = 0;
-      if (has_next) {
-        next_length = mapping->get(next, 0, chars);
-        if (next_length == 0) next_length = 1;
-      }
-      int current_length = i + char_length + next_length;
-      while (stream.HasMore()) {
-        current = stream.GetNext();
-        overflows |= ToUpperOverflows(current);
-        // NOTE: we use 0 as the next character here because, while
-        // the next character may affect what a character converts to,
-        // it does not in any case affect the length of what it convert
-        // to.
-        int char_length = mapping->get(current, 0, chars);
-        if (char_length == 0) char_length = 1;
-        current_length += char_length;
-        if (current_length > String::kMaxLength) {
-          AllowHeapAllocation allocate_error_and_return;
-          THROW_NEW_ERROR_RETURN_FAILURE(isolate,
-                                         NewInvalidStringLengthError());
-        }
-      }
-      // Try again with the real length.  Return signed if we need
-      // to allocate a two-byte string for to uppercase.
-      return (overflows && !ignore_overflow) ? Smi::FromInt(-current_length)
-                                             : Smi::FromInt(current_length);
-    } else {
-      for (int j = 0; j < char_length; j++) {
-        result->Set(i, chars[j]);
-        i++;
-      }
-      has_changed_character = true;
-    }
-    current = next;
-  }
-  if (has_changed_character) {
-    return result;
-  } else {
-    // If we didn't actually change anything in doing the conversion
-    // we simple return the result and let the converted string
-    // become garbage; there is no reason to keep two identical strings
-    // alive.
-    return string;
-  }
-}
-
-
-static const uintptr_t kOneInEveryByte = kUintptrAllBitsSet / 0xFF;
-static const uintptr_t kAsciiMask = kOneInEveryByte << 7;
-
-// Given a word and two range boundaries returns a word with high bit
-// set in every byte iff the corresponding input byte was strictly in
-// the range (m, n). All the other bits in the result are cleared.
-// This function is only useful when it can be inlined and the
-// boundaries are statically known.
-// Requires: all bytes in the input word and the boundaries must be
-// ASCII (less than 0x7F).
-static inline uintptr_t AsciiRangeMask(uintptr_t w, char m, char n) {
-  // Use strict inequalities since in edge cases the function could be
-  // further simplified.
-  DCHECK(0 < m && m < n);
-  // Has high bit set in every w byte less than n.
-  uintptr_t tmp1 = kOneInEveryByte * (0x7F + n) - w;
-  // Has high bit set in every w byte greater than m.
-  uintptr_t tmp2 = w + kOneInEveryByte * (0x7F - m);
-  return (tmp1 & tmp2 & (kOneInEveryByte * 0x80));
-}
-
-
-#ifdef DEBUG
-static bool CheckFastAsciiConvert(char* dst, const char* src, int length,
-                                  bool changed, bool is_to_lower) {
-  bool expected_changed = false;
-  for (int i = 0; i < length; i++) {
-    if (dst[i] == src[i]) continue;
-    expected_changed = true;
-    if (is_to_lower) {
-      DCHECK('A' <= src[i] && src[i] <= 'Z');
-      DCHECK(dst[i] == src[i] + ('a' - 'A'));
-    } else {
-      DCHECK('a' <= src[i] && src[i] <= 'z');
-      DCHECK(dst[i] == src[i] - ('a' - 'A'));
-    }
-  }
-  return (expected_changed == changed);
-}
-#endif
-
-
-template <class Converter>
-static bool FastAsciiConvert(char* dst, const char* src, int length,
-                             bool* changed_out) {
-#ifdef DEBUG
-  char* saved_dst = dst;
-  const char* saved_src = src;
-#endif
-  DisallowHeapAllocation no_gc;
-  // We rely on the distance between upper and lower case letters
-  // being a known power of 2.
-  DCHECK('a' - 'A' == (1 << 5));
-  // Boundaries for the range of input characters than require conversion.
-  static const char lo = Converter::kIsToLower ? 'A' - 1 : 'a' - 1;
-  static const char hi = Converter::kIsToLower ? 'Z' + 1 : 'z' + 1;
-  bool changed = false;
-  uintptr_t or_acc = 0;
-  const char* const limit = src + length;
-
-  // dst is newly allocated and always aligned.
-  DCHECK(IsAligned(reinterpret_cast<intptr_t>(dst), sizeof(uintptr_t)));
-  // Only attempt processing one word at a time if src is also aligned.
-  if (IsAligned(reinterpret_cast<intptr_t>(src), sizeof(uintptr_t))) {
-    // Process the prefix of the input that requires no conversion one aligned
-    // (machine) word at a time.
-    while (src <= limit - sizeof(uintptr_t)) {
-      const uintptr_t w = *reinterpret_cast<const uintptr_t*>(src);
-      or_acc |= w;
-      if (AsciiRangeMask(w, lo, hi) != 0) {
-        changed = true;
-        break;
-      }
-      *reinterpret_cast<uintptr_t*>(dst) = w;
-      src += sizeof(uintptr_t);
-      dst += sizeof(uintptr_t);
-    }
-    // Process the remainder of the input performing conversion when
-    // required one word at a time.
-    while (src <= limit - sizeof(uintptr_t)) {
-      const uintptr_t w = *reinterpret_cast<const uintptr_t*>(src);
-      or_acc |= w;
-      uintptr_t m = AsciiRangeMask(w, lo, hi);
-      // The mask has high (7th) bit set in every byte that needs
-      // conversion and we know that the distance between cases is
-      // 1 << 5.
-      *reinterpret_cast<uintptr_t*>(dst) = w ^ (m >> 2);
-      src += sizeof(uintptr_t);
-      dst += sizeof(uintptr_t);
-    }
-  }
-  // Process the last few bytes of the input (or the whole input if
-  // unaligned access is not supported).
-  while (src < limit) {
-    char c = *src;
-    or_acc |= c;
-    if (lo < c && c < hi) {
-      c ^= (1 << 5);
-      changed = true;
-    }
-    *dst = c;
-    ++src;
-    ++dst;
-  }
-
-  if ((or_acc & kAsciiMask) != 0) return false;
-
-  DCHECK(CheckFastAsciiConvert(saved_dst, saved_src, length, changed,
-                               Converter::kIsToLower));
-
-  *changed_out = changed;
-  return true;
-}
-
-
-template <class Converter>
-MUST_USE_RESULT static Object* ConvertCase(
-    Handle<String> s, Isolate* isolate,
-    unibrow::Mapping<Converter, 128>* mapping) {
-  s = String::Flatten(s);
-  int length = s->length();
-  // Assume that the string is not empty; we need this assumption later
-  if (length == 0) return *s;
-
-  // Simpler handling of ASCII strings.
-  //
-  // NOTE: This assumes that the upper/lower case of an ASCII
-  // character is also ASCII.  This is currently the case, but it
-  // might break in the future if we implement more context and locale
-  // dependent upper/lower conversions.
-  if (s->IsOneByteRepresentationUnderneath()) {
-    // Same length as input.
-    Handle<SeqOneByteString> result =
-        isolate->factory()->NewRawOneByteString(length).ToHandleChecked();
-    DisallowHeapAllocation no_gc;
-    String::FlatContent flat_content = s->GetFlatContent();
-    DCHECK(flat_content.IsFlat());
-    bool has_changed_character = false;
-    bool is_ascii = FastAsciiConvert<Converter>(
-        reinterpret_cast<char*>(result->GetChars()),
-        reinterpret_cast<const char*>(flat_content.ToOneByteVector().start()),
-        length, &has_changed_character);
-    // If not ASCII, we discard the result and take the 2 byte path.
-    if (is_ascii) return has_changed_character ? *result : *s;
-  }
-
-  Handle<SeqString> result;  // Same length as input.
-  if (s->IsOneByteRepresentation()) {
-    result = isolate->factory()->NewRawOneByteString(length).ToHandleChecked();
-  } else {
-    result = isolate->factory()->NewRawTwoByteString(length).ToHandleChecked();
-  }
-
-  Object* answer = ConvertCaseHelper(isolate, *s, *result, length, mapping);
-  if (answer->IsException(isolate) || answer->IsString()) return answer;
-
-  DCHECK(answer->IsSmi());
-  length = Smi::cast(answer)->value();
-  if (s->IsOneByteRepresentation() && length > 0) {
-    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-        isolate, result, isolate->factory()->NewRawOneByteString(length));
-  } else {
-    if (length < 0) length = -length;
-    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-        isolate, result, isolate->factory()->NewRawTwoByteString(length));
-  }
-  return ConvertCaseHelper(isolate, *s, *result, length, mapping);
-}
-
-
-RUNTIME_FUNCTION(Runtime_StringToLowerCase) {
-  HandleScope scope(isolate);
-  DCHECK_EQ(args.length(), 1);
-  CONVERT_ARG_HANDLE_CHECKED(String, s, 0);
-  return ConvertCase(s, isolate, isolate->runtime_state()->to_lower_mapping());
-}
-
-
-RUNTIME_FUNCTION(Runtime_StringToUpperCase) {
-  HandleScope scope(isolate);
-  DCHECK_EQ(args.length(), 1);
-  CONVERT_ARG_HANDLE_CHECKED(String, s, 0);
-  return ConvertCase(s, isolate, isolate->runtime_state()->to_upper_mapping());
 }
 
 RUNTIME_FUNCTION(Runtime_StringLessThan) {
@@ -870,17 +644,10 @@ RUNTIME_FUNCTION(Runtime_StringLessThan) {
   DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, x, 0);
   CONVERT_ARG_HANDLE_CHECKED(String, y, 1);
-  switch (String::Compare(x, y)) {
-    case ComparisonResult::kLessThan:
-      return isolate->heap()->true_value();
-    case ComparisonResult::kEqual:
-    case ComparisonResult::kGreaterThan:
-      return isolate->heap()->false_value();
-    case ComparisonResult::kUndefined:
-      break;
-  }
-  UNREACHABLE();
-  return Smi::kZero;
+  ComparisonResult result = String::Compare(x, y);
+  DCHECK_NE(result, ComparisonResult::kUndefined);
+  return isolate->heap()->ToBoolean(
+      ComparisonResultToBool(Operation::kLessThan, result));
 }
 
 RUNTIME_FUNCTION(Runtime_StringLessThanOrEqual) {
@@ -888,17 +655,10 @@ RUNTIME_FUNCTION(Runtime_StringLessThanOrEqual) {
   DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, x, 0);
   CONVERT_ARG_HANDLE_CHECKED(String, y, 1);
-  switch (String::Compare(x, y)) {
-    case ComparisonResult::kEqual:
-    case ComparisonResult::kLessThan:
-      return isolate->heap()->true_value();
-    case ComparisonResult::kGreaterThan:
-      return isolate->heap()->false_value();
-    case ComparisonResult::kUndefined:
-      break;
-  }
-  UNREACHABLE();
-  return Smi::kZero;
+  ComparisonResult result = String::Compare(x, y);
+  DCHECK_NE(result, ComparisonResult::kUndefined);
+  return isolate->heap()->ToBoolean(
+      ComparisonResultToBool(Operation::kLessThanOrEqual, result));
 }
 
 RUNTIME_FUNCTION(Runtime_StringGreaterThan) {
@@ -906,17 +666,10 @@ RUNTIME_FUNCTION(Runtime_StringGreaterThan) {
   DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, x, 0);
   CONVERT_ARG_HANDLE_CHECKED(String, y, 1);
-  switch (String::Compare(x, y)) {
-    case ComparisonResult::kGreaterThan:
-      return isolate->heap()->true_value();
-    case ComparisonResult::kEqual:
-    case ComparisonResult::kLessThan:
-      return isolate->heap()->false_value();
-    case ComparisonResult::kUndefined:
-      break;
-  }
-  UNREACHABLE();
-  return Smi::kZero;
+  ComparisonResult result = String::Compare(x, y);
+  DCHECK_NE(result, ComparisonResult::kUndefined);
+  return isolate->heap()->ToBoolean(
+      ComparisonResultToBool(Operation::kGreaterThan, result));
 }
 
 RUNTIME_FUNCTION(Runtime_StringGreaterThanOrEqual) {
@@ -924,17 +677,10 @@ RUNTIME_FUNCTION(Runtime_StringGreaterThanOrEqual) {
   DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, x, 0);
   CONVERT_ARG_HANDLE_CHECKED(String, y, 1);
-  switch (String::Compare(x, y)) {
-    case ComparisonResult::kEqual:
-    case ComparisonResult::kGreaterThan:
-      return isolate->heap()->true_value();
-    case ComparisonResult::kLessThan:
-      return isolate->heap()->false_value();
-    case ComparisonResult::kUndefined:
-      break;
-  }
-  UNREACHABLE();
-  return Smi::kZero;
+  ComparisonResult result = String::Compare(x, y);
+  DCHECK_NE(result, ComparisonResult::kUndefined);
+  return isolate->heap()->ToBoolean(
+      ComparisonResultToBool(Operation::kGreaterThanOrEqual, result));
 }
 
 RUNTIME_FUNCTION(Runtime_StringEqual) {
@@ -955,38 +701,25 @@ RUNTIME_FUNCTION(Runtime_StringNotEqual) {
 
 RUNTIME_FUNCTION(Runtime_FlattenString) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 1);
+  DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(String, str, 0);
   return *String::Flatten(str);
 }
-
 
 RUNTIME_FUNCTION(Runtime_StringCharFromCode) {
   HandleScope handlescope(isolate);
   DCHECK_EQ(1, args.length());
   if (args[0]->IsNumber()) {
     CONVERT_NUMBER_CHECKED(uint32_t, code, Uint32, args[0]);
-    code &= 0xffff;
+    code &= 0xFFFF;
     return *isolate->factory()->LookupSingleCharacterStringFromCode(code);
   }
   return isolate->heap()->empty_string();
 }
 
-RUNTIME_FUNCTION(Runtime_ExternalStringGetChar) {
+RUNTIME_FUNCTION(Runtime_StringMaxLength) {
   SealHandleScope shs(isolate);
-  DCHECK_EQ(2, args.length());
-  CONVERT_ARG_CHECKED(ExternalString, string, 0);
-  CONVERT_INT32_ARG_CHECKED(index, 1);
-  return Smi::FromInt(string->Get(index));
-}
-
-RUNTIME_FUNCTION(Runtime_StringCharCodeAt) {
-  SealHandleScope shs(isolate);
-  DCHECK(args.length() == 2);
-  if (!args[0]->IsString()) return isolate->heap()->undefined_value();
-  if (!args[1]->IsNumber()) return isolate->heap()->undefined_value();
-  if (std::isinf(args.number_at(1))) return isolate->heap()->nan_value();
-  return __RT_impl_Runtime_StringCharCodeAtRT(args, isolate);
+  return Smi::FromInt(String::kMaxLength);
 }
 
 }  // namespace internal

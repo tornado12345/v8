@@ -4,7 +4,7 @@
 
 // Flags: --validate-asm --allow-natives-syntax
 
-InspectorTest.log(
+let {session, contextGroup, Protocol} = InspectorTest.start(
     'This test runs asm.js which calls back to JS. Before executing (after ' +
     'the script is parsed) we set breakpoints in the asm.js code.');
 
@@ -50,7 +50,7 @@ InspectorTest.runTestSuite([
 
   function addScript(next) {
     afterScriptParsedCallback = next;
-    InspectorTest.addScript(testFunction.toString());
+    contextGroup.addScript(testFunction.toString());
   },
 
   function runTestFunction(next) {
@@ -103,12 +103,12 @@ function handleScriptParsed(messageObject)
   InspectorTest.log('Script nr ' + numScripts + ' parsed!');
   if (numScripts > 1) return;
 
-  var startLine = messageObject.params.startLine;
+  var startLine = messageObject.params.startLine + 3;
   var endLine = messageObject.params.endLine;
   InspectorTest.log('First script; assuming testFunction.');
   InspectorTest.log(
-      'Flooding script with breakpoints for all lines (' + startLine + ' - ' +
-      endLine + ')...');
+      'Flooding script with breakpoints for the lines ' + startLine + ' to ' +
+      endLine + '...');
   var currentLine = startLine;
   function setNextBreakpoint(message) {
     if (message) InspectorTest.logMessage('error: ' + message.error);

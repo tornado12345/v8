@@ -4,17 +4,15 @@
 
 #include "test/cctest/compiler/function-tester.h"
 
-#include "src/ast/ast-numbering.h"
-#include "src/compilation-info.h"
+#include "src/api.h"
 #include "src/compiler.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/pipeline.h"
 #include "src/execution.h"
-#include "src/full-codegen/full-codegen.h"
 #include "src/handles.h"
 #include "src/objects-inl.h"
+#include "src/optimized-compilation-info.h"
 #include "src/parsing/parse-info.h"
-#include "src/parsing/parser.h"
 #include "test/cctest/cctest.h"
 
 namespace v8 {
@@ -26,7 +24,7 @@ FunctionTester::FunctionTester(const char* source, uint32_t flags)
       function((FLAG_allow_natives_syntax = true, NewFunction(source))),
       flags_(flags) {
   Compile(function);
-  const uint32_t supported_flags = CompilationInfo::kInliningEnabled;
+  const uint32_t supported_flags = OptimizedCompilationInfo::kInliningEnabled;
   CHECK_EQ(0u, flags_ & ~supported_flags);
 }
 
@@ -42,38 +40,20 @@ FunctionTester::FunctionTester(Handle<Code> code, int param_count)
       function((FLAG_allow_natives_syntax = true,
                 NewFunction(BuildFunction(param_count).c_str()))),
       flags_(0) {
+  CHECK(!code.is_null());
   Compile(function);
-  function->ReplaceCode(*code);
+  function->set_code(*code);
 }
 
-FunctionTester::FunctionTester(const CallInterfaceDescriptor& descriptor,
-                               Handle<Code> code)
-    : FunctionTester(code, descriptor.GetParameterCount()) {}
+FunctionTester::FunctionTester(Handle<Code> code) : FunctionTester(code, 0) {}
 
-MaybeHandle<Object> FunctionTester::Call() {
-  return Execution::Call(isolate, function, undefined(), 0, nullptr);
-}
-
-MaybeHandle<Object> FunctionTester::Call(Handle<Object> a) {
-  Handle<Object> args[] = {a};
-  return Execution::Call(isolate, function, undefined(), 1, args);
-}
-
-MaybeHandle<Object> FunctionTester::Call(Handle<Object> a, Handle<Object> b) {
-  Handle<Object> args[] = {a, b};
-  return Execution::Call(isolate, function, undefined(), 2, args);
-}
-
-MaybeHandle<Object> FunctionTester::Call(Handle<Object> a, Handle<Object> b,
-                                         Handle<Object> c) {
-  Handle<Object> args[] = {a, b, c};
-  return Execution::Call(isolate, function, undefined(), 3, args);
-}
-
-MaybeHandle<Object> FunctionTester::Call(Handle<Object> a, Handle<Object> b,
-                                         Handle<Object> c, Handle<Object> d) {
-  Handle<Object> args[] = {a, b, c, d};
-  return Execution::Call(isolate, function, undefined(), 4, args);
+void FunctionTester::CheckThrows(Handle<Object> a) {
+  TryCatch try_catch(reinterpret_cast<v8::Isolate*>(isolate));
+  MaybeHandle<Object> no_result = Call(a);
+  CHECK(isolate->has_pending_exception());
+  CHECK(try_catch.HasCaught());
+  CHECK(no_result.is_null());
+  isolate->OptionalRescheduleException(true);
 }
 
 void FunctionTester::CheckThrows(Handle<Object> a, Handle<Object> b) {
@@ -148,7 +128,7 @@ Handle<Object> FunctionTester::false_value() {
 
 Handle<JSFunction> FunctionTester::ForMachineGraph(Graph* graph,
                                                    int param_count) {
-  JSFunction* p = NULL;
+  JSFunction* p = nullptr;
   {  // because of the implicit handle scope of FunctionTester.
     FunctionTester f(graph, param_count);
     p = *f.function;
@@ -157,44 +137,41 @@ Handle<JSFunction> FunctionTester::ForMachineGraph(Graph* graph,
 }
 
 Handle<JSFunction> FunctionTester::Compile(Handle<JSFunction> function) {
+  Handle<SharedFunctionInfo> shared(function->shared());
   Zone zone(function->GetIsolate()->allocator(), ZONE_NAME);
-  ParseInfo parse_info(&zone, handle(function->shared()));
-  CompilationInfo info(&parse_info, function);
+  OptimizedCompilationInfo info(&zone, function->GetIsolate(), shared,
+                                function);
 
-  info.SetOptimizing();
-  info.MarkAsDeoptimizationEnabled();
-  if (flags_ & CompilationInfo::kInliningEnabled) {
+  if (flags_ & OptimizedCompilationInfo::kInliningEnabled) {
     info.MarkAsInliningEnabled();
   }
-  if (Compiler::EnsureBytecode(&info)) {
-    info.MarkAsOptimizeFromBytecode();
-  } else {
-    CHECK(Compiler::ParseAndAnalyze(info.parse_info()));
-    CHECK(Compiler::EnsureDeoptimizationSupport(&info));
-  }
-  JSFunction::EnsureLiterals(function);
 
-  Handle<Code> code = Pipeline::GenerateCodeForTesting(&info);
+  CHECK(function->is_compiled() ||
+        Compiler::Compile(function, Compiler::CLEAR_EXCEPTION));
+  CHECK(info.shared_info()->HasBytecodeArray());
+  JSFunction::EnsureFeedbackVector(function);
+
+  Handle<Code> code =
+      Pipeline::GenerateCodeForTesting(&info, function->GetIsolate());
   CHECK(!code.is_null());
   info.dependencies()->Commit(code);
   info.context()->native_context()->AddOptimizedCode(*code);
-  function->ReplaceCode(*code);
+  function->set_code(*code);
   return function;
 }
 
 // Compile the given machine graph instead of the source of the function
 // and replace the JSFunction's code with the result.
 Handle<JSFunction> FunctionTester::CompileGraph(Graph* graph) {
+  Handle<SharedFunctionInfo> shared(function->shared());
   Zone zone(function->GetIsolate()->allocator(), ZONE_NAME);
-  ParseInfo parse_info(&zone, handle(function->shared()));
-  CompilationInfo info(&parse_info, function);
+  OptimizedCompilationInfo info(&zone, function->GetIsolate(), shared,
+                                function);
 
-  CHECK(Parser::ParseStatic(info.parse_info()));
-  info.SetOptimizing();
-
-  Handle<Code> code = Pipeline::GenerateCodeForTesting(&info, graph);
+  Handle<Code> code =
+      Pipeline::GenerateCodeForTesting(&info, function->GetIsolate(), graph);
   CHECK(!code.is_null());
-  function->ReplaceCode(*code);
+  function->set_code(*code);
   return function;
 }
 

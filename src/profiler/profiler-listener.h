@@ -38,12 +38,15 @@ class ProfilerListener : public CodeEventListener {
                        AbstractCode* code, SharedFunctionInfo* shared,
                        Name* script_name, int line, int column) override;
   void CodeCreateEvent(CodeEventListener::LogEventsAndTags tag,
-                       AbstractCode* code, int args_count) override;
+                       const wasm::WasmCode* code,
+                       wasm::WasmName name) override;
+
   void CodeMovingGCEvent() override {}
   void CodeMoveEvent(AbstractCode* from, Address to) override;
   void CodeDisableOptEvent(AbstractCode* code,
                            SharedFunctionInfo* shared) override;
-  void CodeDeoptEvent(Code* code, Address pc, int fp_to_sp_delta) override;
+  void CodeDeoptEvent(Code* code, DeoptKind kind, Address pc,
+                      int fp_to_sp_delta) override;
   void GetterCallbackEvent(Name* name, Address entry_point) override;
   void RegExpCodeCreateEvent(AbstractCode* code, String* source) override;
   void SetterCallbackEvent(Name* name, Address entry_point) override;
@@ -55,7 +58,8 @@ class ProfilerListener : public CodeEventListener {
       const char* resource_name = CodeEntry::kEmptyResourceName,
       int line_number = v8::CpuProfileNode::kNoLineNumberInfo,
       int column_number = v8::CpuProfileNode::kNoColumnNumberInfo,
-      JITLineInfoTable* line_info = NULL, Address instruction_start = NULL);
+      std::unique_ptr<SourcePositionTable> line_info = nullptr,
+      Address instruction_start = kNullAddress);
 
   void AddObserver(CodeEventObserver* observer);
   void RemoveObserver(CodeEventObserver* observer);
@@ -73,22 +77,22 @@ class ProfilerListener : public CodeEventListener {
   const char* GetFunctionName(const char* name) {
     return function_and_resource_names_.GetFunctionName(name);
   }
+  size_t entries_count_for_test() const { return code_entries_.size(); }
 
  private:
   void RecordInliningInfo(CodeEntry* entry, AbstractCode* abstract_code);
   void RecordDeoptInlinedFrames(CodeEntry* entry, AbstractCode* abstract_code);
   Name* InferScriptName(Name* name, SharedFunctionInfo* info);
   V8_INLINE void DispatchCodeEvent(const CodeEventsContainer& evt_rec) {
-    base::LockGuard<base::Mutex> guard(&mutex_);
     for (auto observer : observers_) {
       observer->CodeEventHandler(evt_rec);
     }
   }
 
+  Isolate* isolate_;
   StringsStorage function_and_resource_names_;
-  std::vector<CodeEntry*> code_entries_;
+  std::vector<std::unique_ptr<CodeEntry>> code_entries_;
   std::vector<CodeEventObserver*> observers_;
-  base::Mutex mutex_;
 
   DISALLOW_COPY_AND_ASSIGN(ProfilerListener);
 };

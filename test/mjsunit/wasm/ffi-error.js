@@ -7,11 +7,11 @@
 load("test/mjsunit/wasm/wasm-constants.js");
 load("test/mjsunit/wasm/wasm-module-builder.js");
 
-function testCallFFI(ffi) {
+function instantiateWithFFI(ffi) {
   var builder = new WasmModuleBuilder();
 
   var sig_index = kSig_i_dd;
-  builder.addImport("fun", sig_index);
+  builder.addImport("mod", "fun", sig_index);
   builder.addFunction("main", sig_index)
     .addBody([
       kExprGetLocal, 0,              // --
@@ -20,46 +20,75 @@ function testCallFFI(ffi) {
     ])    // --
     .exportFunc();
 
-  var module = builder.instantiate(ffi);
+  return builder.instantiate(ffi);
 }
 
 // everything is good.
 (function() {
-  var ffi = new Object();
-  ffi.fun = function(a, b) { print(a, b); }
-  testCallFFI(ffi);
+  var ffi = {"mod": {fun: function(a, b) { print(a, b); }}}
+  instantiateWithFFI(ffi);
 })();
 
 
 // FFI object should be an object.
 assertThrows(function() {
   var ffi = 0;
-  testCallFFI(ffi);
+  instantiateWithFFI(ffi);
+});
+
+
+// FFI object should have a "mod" property.
+assertThrows(function() {
+  instantiateWithFFI({});
 });
 
 
 // FFI object should have a "fun" property.
 assertThrows(function() {
-  var ffi = new Object();
-  testCallFFI(ffi);
+  instantiateWithFFI({mod: {}});
 });
 
 
 // "fun" should be a JS function.
 assertThrows(function() {
-  var ffi = new Object();
-  ffi.fun = new Object();
-  testCallFFI(ffi);
+  instantiateWithFFI({mod: {fun: new Object()}});
 });
 
 
 // "fun" should be a JS function.
 assertThrows(function() {
-  var ffi = new Object();
-  ffi.fun = 0;
-  testCallFFI(ffi);
+  instantiateWithFFI({mod: {fun: 0}});
 });
 
+// "fun" should have signature "i_dd"
+assertThrows(function () {
+  var builder = new WasmModuleBuilder();
+
+  var sig_index = kSig_i_dd;
+  builder.addFunction("exp", kSig_i_i)
+    .addBody([
+      kExprGetLocal, 0,
+    ])    // --
+    .exportFunc();
+
+  var exported = builder.instantiate().exports.exp;
+  instantiateWithFFI({mod: {fun: exported}});
+});
+
+// "fun" matches signature "i_dd"
+(function () {
+  var builder = new WasmModuleBuilder();
+
+  builder.addFunction("exp", kSig_i_dd)
+    .addBody([
+      kExprI32Const, 33,
+    ])    // --
+    .exportFunc();
+
+  var exported = builder.instantiate().exports.exp;
+  var instance = instantiateWithFFI({mod: {fun: exported}});
+  assertEquals(33, instance.exports.main());
+})();
 
 (function I64InSignatureThrows() {
   var builder = new WasmModuleBuilder();
@@ -101,7 +130,7 @@ assertThrows(function() {
   var builder = new WasmModuleBuilder();
   var sig_index = builder.addType(kSig_i_i);
   var sig_i64_index = builder.addType(kSig_i_l);
-  var index = builder.addImport("func", sig_i64_index);
+  var index = builder.addImport("", "func", sig_i64_index);
   builder.addFunction("main", sig_index)
     .addBody([
       kExprGetLocal, 0,
@@ -110,8 +139,45 @@ assertThrows(function() {
     ])        // --
     .exportFunc();
   var func = function() {return {};};
-  var main = builder.instantiate({func: func}).exports.main;
+  var main = builder.instantiate({"": {func: func}}).exports.main;
   assertThrows(function() {
     main(13);
   }, TypeError);
+})();
+
+(function ImportI64ParamWithF64ReturnThrows() {
+  // This tests that we generate correct code by using the correct return
+  // register. See bug 6096.
+  var builder = new WasmModuleBuilder();
+  builder.addImport('', 'f', makeSig([kWasmI64], [kWasmF64]));
+  builder.addFunction('main', kSig_v_v)
+      .addBody([kExprI64Const, 0, kExprCallFunction, 0, kExprDrop])
+      .exportFunc();
+  var instance = builder.instantiate({'': {f: i => i}});
+
+  assertThrows(() => instance.exports.main(), TypeError);
+})();
+
+(function ImportI64Return() {
+  // This tests that we generate correct code by using the correct return
+  // register(s). See bug 6104.
+  var builder = new WasmModuleBuilder();
+  builder.addImport('', 'f', makeSig([], [kWasmI64]));
+  builder.addFunction('main', kSig_v_v)
+      .addBody([kExprCallFunction, 0, kExprDrop])
+      .exportFunc();
+  var instance = builder.instantiate({'': {f: () => 1}});
+
+  assertThrows(() => instance.exports.main(), TypeError);
+})();
+
+(function ImportSymbolToNumberThrows() {
+  var builder = new WasmModuleBuilder();
+  var index = builder.addImport("", "func", kSig_i_v);
+  builder.addFunction("main", kSig_i_v)
+      .addBody([kExprCallFunction, 0])
+      .exportFunc();
+  var func = () => Symbol();
+  var main = builder.instantiate({"": {func: func}}).exports.main;
+  assertThrows(() => main(), TypeError);
 })();

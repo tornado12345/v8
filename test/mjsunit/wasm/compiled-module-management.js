@@ -20,20 +20,29 @@ var instance4;
   var builder = new WasmModuleBuilder();
 
   builder.addMemory(1,1, true);
-  builder.addImport("getValue", kSig_i_v);
+  builder.addImport("", "getValue", kSig_i_v);
   builder.addFunction("f", kSig_i_v)
     .addBody([
       kExprCallFunction, 0
     ]).exportFunc();
 
   module = new WebAssembly.Module(builder.toBuffer());
+  print("Initial module");
   %ValidateWasmModuleState(module);
+
+  print("Initial instances=0");
   %ValidateWasmInstancesChain(module, 0);
-  instance1 = new WebAssembly.Instance(module, {getValue: () => 1});
+  instance1 = new WebAssembly.Instance(module, {"": {getValue: () => 1}});
+
+  print("Initial instances=1");
   %ValidateWasmInstancesChain(module, 1);
-  instance2 = new WebAssembly.Instance(module, {getValue: () => 2});
+  instance2 = new WebAssembly.Instance(module, {"": {getValue: () => 2}});
+
+  print("Initial instances=2");
   %ValidateWasmInstancesChain(module, 2);
-  instance3 = new WebAssembly.Instance(module, {getValue: () => 3});
+  instance3 = new WebAssembly.Instance(module, {"": {getValue: () => 3}});
+
+  print("Initial instances=3");
   %ValidateWasmInstancesChain(module, 3);
 })();
 
@@ -43,6 +52,7 @@ var instance4;
 })();
 
 gc();
+print("After gc instances=2");
 %ValidateWasmInstancesChain(module, 2);
 
 (function CompiledModuleInstancesClear3() {
@@ -51,6 +61,7 @@ gc();
 })();
 
 gc();
+print("After gc instances=1");
 %ValidateWasmInstancesChain(module, 1);
 
 (function CompiledModuleInstancesClear2() {
@@ -58,14 +69,19 @@ gc();
   instance2 = null;
 })();
 
+// Note that two GC's are required because weak cells are not cleared
+// in the same cycle that the instance finalizer is run.
 gc();
+gc();
+print("After gc module state");
 %ValidateWasmModuleState(module);
 
 (function CompiledModuleInstancesInitialize4AndClearModule() {
-  instance4 = new WebAssembly.Instance(module, {getValue: () => 4});
+  instance4 = new WebAssembly.Instance(module, {"": {getValue: () => 4}});
   assertEquals(4, instance4.exports.f());
   module = null;
 })();
 
+// Note that the first GC will clear the module, the second the instance.
 gc();
-%ValidateWasmOrphanedInstance(instance4);
+gc();

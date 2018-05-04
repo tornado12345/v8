@@ -6,7 +6,7 @@
 #define V8_ARGUMENTS_H_
 
 #include "src/allocation.h"
-#include "src/objects-inl.h"
+#include "src/objects.h"
 #include "src/tracing/trace-event.h"
 
 namespace v8 {
@@ -41,7 +41,8 @@ class Arguments BASE_EMBEDDED {
                                         index * kPointerSize));
   }
 
-  template <class S> Handle<S> at(int index) {
+  template <class S = Object>
+  Handle<S> at(int index) {
     Object** value = &((*this)[index]);
     // This cast checks that the object we're accessing does indeed have the
     // expected type.
@@ -49,9 +50,7 @@ class Arguments BASE_EMBEDDED {
     return Handle<S>(reinterpret_cast<S**>(value));
   }
 
-  int smi_at(int index) {
-    return Smi::cast((*this)[index])->value();
-  }
+  int smi_at(int index) { return Smi::ToInt((*this)[index]); }
 
   double number_at(int index) {
     return (*this)[index]->Number();
@@ -86,7 +85,7 @@ double ClobberDoubleRegisters(double x1, double x2, double x3, double x4);
                                                                               \
   V8_NOINLINE static Type Stats_##Name(int args_length, Object** args_object, \
                                        Isolate* isolate) {                    \
-    RuntimeCallTimerScope timer(isolate, &RuntimeCallStats::Name);            \
+    RuntimeCallTimerScope timer(isolate, RuntimeCallCounterId::k##Name);      \
     TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.runtime"),                     \
                  "V8.Runtime_" #Name);                                        \
     Arguments args(args_length, args_object);                                 \
@@ -108,8 +107,6 @@ double ClobberDoubleRegisters(double x1, double x2, double x3, double x4);
 #define RUNTIME_FUNCTION(Name) RUNTIME_FUNCTION_RETURNS_TYPE(Object*, Name)
 #define RUNTIME_FUNCTION_RETURN_PAIR(Name) \
     RUNTIME_FUNCTION_RETURNS_TYPE(ObjectPair, Name)
-#define RUNTIME_FUNCTION_RETURN_TRIPLE(Name) \
-    RUNTIME_FUNCTION_RETURNS_TYPE(ObjectTriple, Name)
 
 }  // namespace internal
 }  // namespace v8

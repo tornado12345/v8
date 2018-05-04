@@ -5,6 +5,10 @@
 #include "src/builtins/builtins.h"
 #include "src/builtins/builtins-utils.h"
 
+#include "src/counters.h"
+#include "src/keys.h"
+#include "src/lookup.h"
+#include "src/objects-inl.h"
 #include "src/property-descriptor.h"
 
 namespace v8 {
@@ -17,9 +21,9 @@ namespace internal {
 BUILTIN(ReflectDefineProperty) {
   HandleScope scope(isolate);
   DCHECK_EQ(4, args.length());
-  Handle<Object> target = args.at<Object>(1);
-  Handle<Object> key = args.at<Object>(2);
-  Handle<Object> attributes = args.at<Object>(3);
+  Handle<Object> target = args.at(1);
+  Handle<Object> key = args.at(2);
+  Handle<Object> attributes = args.at(3);
 
   if (!target->IsJSReceiver()) {
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -37,9 +41,8 @@ BUILTIN(ReflectDefineProperty) {
     return isolate->heap()->exception();
   }
 
-  Maybe<bool> result =
-      JSReceiver::DefineOwnProperty(isolate, Handle<JSReceiver>::cast(target),
-                                    name, &desc, Object::DONT_THROW);
+  Maybe<bool> result = JSReceiver::DefineOwnProperty(
+      isolate, Handle<JSReceiver>::cast(target), name, &desc, kDontThrow);
   MAYBE_RETURN(result, isolate->heap()->exception());
   return *isolate->factory()->ToBoolean(result.FromJust());
 }
@@ -48,8 +51,8 @@ BUILTIN(ReflectDefineProperty) {
 BUILTIN(ReflectDeleteProperty) {
   HandleScope scope(isolate);
   DCHECK_EQ(3, args.length());
-  Handle<Object> target = args.at<Object>(1);
-  Handle<Object> key = args.at<Object>(2);
+  Handle<Object> target = args.at(1);
+  Handle<Object> key = args.at(2);
 
   if (!target->IsJSReceiver()) {
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -63,7 +66,7 @@ BUILTIN(ReflectDeleteProperty) {
                                      Object::ToName(isolate, key));
 
   Maybe<bool> result = JSReceiver::DeletePropertyOrElement(
-      Handle<JSReceiver>::cast(target), name, SLOPPY);
+      Handle<JSReceiver>::cast(target), name, LanguageMode::kSloppy);
   MAYBE_RETURN(result, isolate->heap()->exception());
   return *isolate->factory()->ToBoolean(result.FromJust());
 }
@@ -73,7 +76,7 @@ BUILTIN(ReflectGet) {
   HandleScope scope(isolate);
   Handle<Object> target = args.atOrUndefined(isolate, 1);
   Handle<Object> key = args.atOrUndefined(isolate, 2);
-  Handle<Object> receiver = args.length() > 3 ? args.at<Object>(3) : target;
+  Handle<Object> receiver = args.length() > 3 ? args.at(3) : target;
 
   if (!target->IsJSReceiver()) {
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -95,8 +98,8 @@ BUILTIN(ReflectGet) {
 BUILTIN(ReflectGetOwnPropertyDescriptor) {
   HandleScope scope(isolate);
   DCHECK_EQ(3, args.length());
-  Handle<Object> target = args.at<Object>(1);
-  Handle<Object> key = args.at<Object>(2);
+  Handle<Object> target = args.at(1);
+  Handle<Object> key = args.at(2);
 
   if (!target->IsJSReceiver()) {
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -121,7 +124,7 @@ BUILTIN(ReflectGetOwnPropertyDescriptor) {
 BUILTIN(ReflectGetPrototypeOf) {
   HandleScope scope(isolate);
   DCHECK_EQ(2, args.length());
-  Handle<Object> target = args.at<Object>(1);
+  Handle<Object> target = args.at(1);
 
   if (!target->IsJSReceiver()) {
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -134,35 +137,11 @@ BUILTIN(ReflectGetPrototypeOf) {
                            JSReceiver::GetPrototype(isolate, receiver));
 }
 
-// ES6 section 26.1.9 Reflect.has
-BUILTIN(ReflectHas) {
-  HandleScope scope(isolate);
-  DCHECK_EQ(3, args.length());
-  Handle<Object> target = args.at<Object>(1);
-  Handle<Object> key = args.at<Object>(2);
-
-  if (!target->IsJSReceiver()) {
-    THROW_NEW_ERROR_RETURN_FAILURE(
-        isolate, NewTypeError(MessageTemplate::kCalledOnNonObject,
-                              isolate->factory()->NewStringFromAsciiChecked(
-                                  "Reflect.has")));
-  }
-
-  Handle<Name> name;
-  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, name,
-                                     Object::ToName(isolate, key));
-
-  Maybe<bool> result =
-      JSReceiver::HasProperty(Handle<JSReceiver>::cast(target), name);
-  return result.IsJust() ? *isolate->factory()->ToBoolean(result.FromJust())
-                         : isolate->heap()->exception();
-}
-
 // ES6 section 26.1.10 Reflect.isExtensible
 BUILTIN(ReflectIsExtensible) {
   HandleScope scope(isolate);
   DCHECK_EQ(2, args.length());
-  Handle<Object> target = args.at<Object>(1);
+  Handle<Object> target = args.at(1);
 
   if (!target->IsJSReceiver()) {
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -181,7 +160,7 @@ BUILTIN(ReflectIsExtensible) {
 BUILTIN(ReflectOwnKeys) {
   HandleScope scope(isolate);
   DCHECK_EQ(2, args.length());
-  Handle<Object> target = args.at<Object>(1);
+  Handle<Object> target = args.at(1);
 
   if (!target->IsJSReceiver()) {
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -203,7 +182,7 @@ BUILTIN(ReflectOwnKeys) {
 BUILTIN(ReflectPreventExtensions) {
   HandleScope scope(isolate);
   DCHECK_EQ(2, args.length());
-  Handle<Object> target = args.at<Object>(1);
+  Handle<Object> target = args.at(1);
 
   if (!target->IsJSReceiver()) {
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -213,7 +192,7 @@ BUILTIN(ReflectPreventExtensions) {
   }
 
   Maybe<bool> result = JSReceiver::PreventExtensions(
-      Handle<JSReceiver>::cast(target), Object::DONT_THROW);
+      Handle<JSReceiver>::cast(target), kDontThrow);
   MAYBE_RETURN(result, isolate->heap()->exception());
   return *isolate->factory()->ToBoolean(result.FromJust());
 }
@@ -224,7 +203,7 @@ BUILTIN(ReflectSet) {
   Handle<Object> target = args.atOrUndefined(isolate, 1);
   Handle<Object> key = args.atOrUndefined(isolate, 2);
   Handle<Object> value = args.atOrUndefined(isolate, 3);
-  Handle<Object> receiver = args.length() > 4 ? args.at<Object>(4) : target;
+  Handle<Object> receiver = args.length() > 4 ? args.at(4) : target;
 
   if (!target->IsJSReceiver()) {
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -240,7 +219,7 @@ BUILTIN(ReflectSet) {
   LookupIterator it = LookupIterator::PropertyOrElement(
       isolate, receiver, name, Handle<JSReceiver>::cast(target));
   Maybe<bool> result = Object::SetSuperProperty(
-      &it, value, SLOPPY, Object::MAY_BE_STORE_FROM_KEYED);
+      &it, value, LanguageMode::kSloppy, Object::MAY_BE_STORE_FROM_KEYED);
   MAYBE_RETURN(result, isolate->heap()->exception());
   return *isolate->factory()->ToBoolean(result.FromJust());
 }
@@ -249,8 +228,8 @@ BUILTIN(ReflectSet) {
 BUILTIN(ReflectSetPrototypeOf) {
   HandleScope scope(isolate);
   DCHECK_EQ(3, args.length());
-  Handle<Object> target = args.at<Object>(1);
-  Handle<Object> proto = args.at<Object>(2);
+  Handle<Object> target = args.at(1);
+  Handle<Object> proto = args.at(2);
 
   if (!target->IsJSReceiver()) {
     THROW_NEW_ERROR_RETURN_FAILURE(
@@ -265,7 +244,7 @@ BUILTIN(ReflectSetPrototypeOf) {
   }
 
   Maybe<bool> result = JSReceiver::SetPrototype(
-      Handle<JSReceiver>::cast(target), proto, true, Object::DONT_THROW);
+      Handle<JSReceiver>::cast(target), proto, true, kDontThrow);
   MAYBE_RETURN(result, isolate->heap()->exception());
   return *isolate->factory()->ToBoolean(result.FromJust());
 }

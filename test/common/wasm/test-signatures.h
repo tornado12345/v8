@@ -12,7 +12,7 @@ namespace v8 {
 namespace internal {
 namespace wasm {
 
-typedef Signature<LocalType> FunctionSig;
+typedef Signature<ValueType> FunctionSig;
 
 // A helper class with many useful signatures in order to simplify tests.
 class TestSignatures {
@@ -26,6 +26,8 @@ class TestSignatures {
         sig_i_ff(1, 2, kIntFloatTypes4),
         sig_i_d(1, 1, kIntDoubleTypes4),
         sig_i_dd(1, 2, kIntDoubleTypes4),
+        sig_i_r(1, 1, kIntRefTypes4),
+        sig_i_rr(1, 2, kIntRefTypes4),
         sig_l_v(1, 0, kLongTypes4),
         sig_l_l(1, 1, kLongTypes4),
         sig_l_ll(1, 2, kLongTypes4),
@@ -34,24 +36,30 @@ class TestSignatures {
         sig_f_ff(1, 2, kFloatTypes4),
         sig_d_d(1, 1, kDoubleTypes4),
         sig_d_dd(1, 2, kDoubleTypes4),
+        sig_r_v(1, 0, kRefTypes4),
         sig_v_v(0, 0, kIntTypes4),
         sig_v_i(0, 1, kIntTypes4),
         sig_v_ii(0, 2, kIntTypes4),
         sig_v_iii(0, 3, kIntTypes4),
-        sig_s_i(1, 1, kSimd128IntTypes4) {
+        sig_s_i(1, 1, kSimd128IntTypes4),
+        sig_ii_v(2, 0, kIntTypes4),
+        sig_iii_v(3, 0, kIntTypes4) {
     // I used C++ and you won't believe what happened next....
-    for (int i = 0; i < 4; i++) kIntTypes4[i] = kAstI32;
-    for (int i = 0; i < 4; i++) kLongTypes4[i] = kAstI64;
-    for (int i = 0; i < 4; i++) kFloatTypes4[i] = kAstF32;
-    for (int i = 0; i < 4; i++) kDoubleTypes4[i] = kAstF64;
-    for (int i = 0; i < 4; i++) kIntLongTypes4[i] = kAstI64;
-    for (int i = 0; i < 4; i++) kIntFloatTypes4[i] = kAstF32;
-    for (int i = 0; i < 4; i++) kIntDoubleTypes4[i] = kAstF64;
-    for (int i = 0; i < 4; i++) kSimd128IntTypes4[i] = kAstS128;
-    kIntLongTypes4[0] = kAstI32;
-    kIntFloatTypes4[0] = kAstI32;
-    kIntDoubleTypes4[0] = kAstI32;
-    kSimd128IntTypes4[1] = kAstI32;
+    for (int i = 0; i < 4; i++) kIntTypes4[i] = kWasmI32;
+    for (int i = 0; i < 4; i++) kLongTypes4[i] = kWasmI64;
+    for (int i = 0; i < 4; i++) kFloatTypes4[i] = kWasmF32;
+    for (int i = 0; i < 4; i++) kDoubleTypes4[i] = kWasmF64;
+    for (int i = 0; i < 4; i++) kRefTypes4[i] = kWasmAnyRef;
+    for (int i = 0; i < 4; i++) kIntLongTypes4[i] = kWasmI64;
+    for (int i = 0; i < 4; i++) kIntFloatTypes4[i] = kWasmF32;
+    for (int i = 0; i < 4; i++) kIntDoubleTypes4[i] = kWasmF64;
+    for (int i = 0; i < 4; i++) kIntRefTypes4[i] = kWasmAnyRef;
+    for (int i = 0; i < 4; i++) kSimd128IntTypes4[i] = kWasmS128;
+    kIntLongTypes4[0] = kWasmI32;
+    kIntFloatTypes4[0] = kWasmI32;
+    kIntDoubleTypes4[0] = kWasmI32;
+    kIntRefTypes4[0] = kWasmI32;
+    kSimd128IntTypes4[1] = kWasmI32;
   }
 
   FunctionSig* i_v() { return &sig_i_v; }
@@ -68,11 +76,15 @@ class TestSignatures {
   FunctionSig* l_l() { return &sig_l_l; }
   FunctionSig* l_ll() { return &sig_l_ll; }
   FunctionSig* i_ll() { return &sig_i_ll; }
+  FunctionSig* i_r() { return &sig_i_r; }
+  FunctionSig* i_rr() { return &sig_i_rr; }
 
   FunctionSig* f_f() { return &sig_f_f; }
   FunctionSig* f_ff() { return &sig_f_ff; }
   FunctionSig* d_d() { return &sig_d_d; }
   FunctionSig* d_dd() { return &sig_d_dd; }
+
+  FunctionSig* r_v() { return &sig_r_v; }
 
   FunctionSig* v_v() { return &sig_v_v; }
   FunctionSig* v_i() { return &sig_v_i; }
@@ -80,9 +92,12 @@ class TestSignatures {
   FunctionSig* v_iii() { return &sig_v_iii; }
   FunctionSig* s_i() { return &sig_s_i; }
 
-  FunctionSig* many(Zone* zone, LocalType ret, LocalType param, int count) {
-    FunctionSig::Builder builder(zone, ret == kAstStmt ? 0 : 1, count);
-    if (ret != kAstStmt) builder.AddReturn(ret);
+  FunctionSig* ii_v() { return &sig_ii_v; }
+  FunctionSig* iii_v() { return &sig_iii_v; }
+
+  FunctionSig* many(Zone* zone, ValueType ret, ValueType param, int count) {
+    FunctionSig::Builder builder(zone, ret == kWasmStmt ? 0 : 1, count);
+    if (ret != kWasmStmt) builder.AddReturn(ret);
     for (int i = 0; i < count; i++) {
       builder.AddParam(param);
     }
@@ -90,14 +105,16 @@ class TestSignatures {
   }
 
  private:
-  LocalType kIntTypes4[4];
-  LocalType kLongTypes4[4];
-  LocalType kFloatTypes4[4];
-  LocalType kDoubleTypes4[4];
-  LocalType kIntLongTypes4[4];
-  LocalType kIntFloatTypes4[4];
-  LocalType kIntDoubleTypes4[4];
-  LocalType kSimd128IntTypes4[4];
+  ValueType kIntTypes4[4];
+  ValueType kLongTypes4[4];
+  ValueType kFloatTypes4[4];
+  ValueType kDoubleTypes4[4];
+  ValueType kRefTypes4[4];
+  ValueType kIntLongTypes4[4];
+  ValueType kIntFloatTypes4[4];
+  ValueType kIntDoubleTypes4[4];
+  ValueType kIntRefTypes4[4];
+  ValueType kSimd128IntTypes4[4];
 
   FunctionSig sig_i_v;
   FunctionSig sig_i_i;
@@ -108,6 +125,8 @@ class TestSignatures {
   FunctionSig sig_i_ff;
   FunctionSig sig_i_d;
   FunctionSig sig_i_dd;
+  FunctionSig sig_i_r;
+  FunctionSig sig_i_rr;
 
   FunctionSig sig_l_v;
   FunctionSig sig_l_l;
@@ -119,11 +138,16 @@ class TestSignatures {
   FunctionSig sig_d_d;
   FunctionSig sig_d_dd;
 
+  FunctionSig sig_r_v;
+
   FunctionSig sig_v_v;
   FunctionSig sig_v_i;
   FunctionSig sig_v_ii;
   FunctionSig sig_v_iii;
   FunctionSig sig_s_i;
+
+  FunctionSig sig_ii_v;
+  FunctionSig sig_iii_v;
 };
 }  // namespace wasm
 }  // namespace internal

@@ -24,6 +24,8 @@
 // THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
+// Flags: --noanalyze-environment-liveness
 
 
 // Test that a variable in the local scope that shadows a context-allocated
@@ -31,7 +33,7 @@
 
 Debug = debug.Debug;
 
-var exception = false;
+var exceptionThrown = false;
 
 function listener(event, exec_state, event_data, data) {
   if (event != Debug.DebugEvent.Break) return;
@@ -42,7 +44,7 @@ function listener(event, exec_state, event_data, data) {
     // Assert correct value.
     assertEquals(3, breakpoint.evaluate('x').value());
   } catch (e) {
-    exception = e;
+    exceptionThrown = true;
   }
 }
 
@@ -65,4 +67,4 @@ function h() {
 
 h();
 
-assertFalse(exception);
+assertFalse(exceptionThrown);

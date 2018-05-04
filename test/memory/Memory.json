@@ -19,8 +19,20 @@
       "results_regexp": "(\\d+) bytes for startup$"
     },
     {
+      "name": "SnapshotSizeBuiltins",
+      "results_regexp": "(\\d+) bytes for builtins$"
+    },
+    {
       "name": "SnapshotSizeContext",
       "results_regexp": "(\\d+) bytes for context #0$"
+    },
+    {
+      "name": "DeserializationTimeIsolate",
+      "results_regexp": "\\[Deserializing isolate \\(\\d+ bytes\\) took ([\\d.]+) ms\\]"
+    },
+    {
+      "name": "DeserializationTimeContext",
+      "results_regexp": "\\[Deserializing context #0 \\(\\d+ bytes\\) took ([\\d.]+) ms\\]"
     }
   ]
 }

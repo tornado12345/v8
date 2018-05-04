@@ -5,6 +5,7 @@
 #include "src/inspector/v8-heap-profiler-agent-impl.h"
 
 #include "src/inspector/injected-script.h"
+#include "src/inspector/inspected-context.h"
 #include "src/inspector/protocol/Protocol.h"
 #include "src/inspector/string-util.h"
 #include "src/inspector/v8-debugger.h"
@@ -55,14 +56,14 @@ class GlobalObjectNameResolver final
   const char* GetName(v8::Local<v8::Object> object) override {
     InspectedContext* context = m_session->inspector()->getContext(
         m_session->contextGroupId(),
-        V8Debugger::contextId(object->CreationContext()));
+        InspectedContext::contextId(object->CreationContext()));
     if (!context) return "";
     String16 name = context->origin();
     size_t length = name.length();
     if (m_offset + length + 1 >= m_strings.size()) return "";
     for (size_t i = 0; i < length; ++i) {
       UChar ch = name[i];
-      m_strings[m_offset + i] = ch > 0xff ? '?' : static_cast<char>(ch);
+      m_strings[m_offset + i] = ch > 0xFF ? '?' : static_cast<char>(ch);
     }
     m_strings[m_offset + length] = '\0';
     char* result = &*m_strings.begin() + m_offset;
@@ -216,7 +217,7 @@ Response V8HeapProfilerAgentImpl::takeHeapSnapshot(Maybe<bool> reportProgress) {
   if (!profiler) return Response::Error("Cannot access v8 heap profiler");
   std::unique_ptr<HeapSnapshotProgress> progress;
   if (reportProgress.fromMaybe(false))
-    progress = wrapUnique(new HeapSnapshotProgress(&m_frontend));
+    progress.reset(new HeapSnapshotProgress(&m_frontend));
 
   GlobalObjectNameResolver resolver(m_session);
   const v8::HeapSnapshot* snapshot =
@@ -244,7 +245,7 @@ Response V8HeapProfilerAgentImpl::getObjectByHeapObjectId(
 
   *result = m_session->wrapObject(heapObject->CreationContext(), heapObject,
                                   objectGroup.fromMaybe(""), false);
-  if (!result) return Response::Error("Object is not available");
+  if (!*result) return Response::Error("Object is not available");
   return Response::OK();
 }
 
@@ -260,7 +261,8 @@ Response V8HeapProfilerAgentImpl::addInspectedHeapObject(
 
   if (!m_session->inspector()->client()->isInspectableHeapObject(heapObject))
     return Response::Error("Object is not available");
-  m_session->addInspectedObject(wrapUnique(new InspectableHeapObject(id)));
+  m_session->addInspectedObject(
+      std::unique_ptr<InspectableHeapObject>(new InspectableHeapObject(id)));
   return Response::OK();
 }
 
@@ -361,17 +363,24 @@ buildSampingHeapProfileNode(const v8::AllocationProfile::Node* node) {
 
 Response V8HeapProfilerAgentImpl::stopSampling(
     std::unique_ptr<protocol::HeapProfiler::SamplingHeapProfile>* profile) {
+  Response result = getSamplingProfile(profile);
+  if (result.isSuccess()) {
+    m_isolate->GetHeapProfiler()->StopSamplingHeapProfiler();
+    m_state->setBoolean(HeapProfilerAgentState::samplingHeapProfilerEnabled,
+                        false);
+  }
+  return result;
+}
+
+Response V8HeapProfilerAgentImpl::getSamplingProfile(
+    std::unique_ptr<protocol::HeapProfiler::SamplingHeapProfile>* profile) {
   v8::HeapProfiler* profiler = m_isolate->GetHeapProfiler();
-  if (!profiler) return Response::Error("Cannot access v8 heap profiler");
   v8::HandleScope scope(
-      m_isolate);  // Allocation profile contains Local handles.
+      m_isolate);  // v8::AllocationProfile contains Local handles.
   std::unique_ptr<v8::AllocationProfile> v8Profile(
       profiler->GetAllocationProfile());
-  profiler->StopSamplingHeapProfiler();
-  m_state->setBoolean(HeapProfilerAgentState::samplingHeapProfilerEnabled,
-                      false);
   if (!v8Profile)
-    return Response::Error("Cannot access v8 sampled heap profile.");
+    return Response::Error("V8 sampling heap profiler was not started.");
   v8::AllocationProfile::Node* root = v8Profile->GetRootNode();
   *profile = protocol::HeapProfiler::SamplingHeapProfile::create()
                  .setHead(buildSampingHeapProfileNode(root))

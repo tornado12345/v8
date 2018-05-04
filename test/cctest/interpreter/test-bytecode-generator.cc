@@ -9,6 +9,7 @@
 #include "src/interpreter/bytecode-array-iterator.h"
 #include "src/interpreter/bytecode-generator.h"
 #include "src/interpreter/interpreter.h"
+#include "src/objects-inl.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/interpreter/bytecode-expectations-printer.h"
 #include "test/cctest/test-feedback-vector.h"
@@ -71,10 +72,8 @@ static const char* kGoldenFileDirectory =
 class InitializedIgnitionHandleScope : public InitializedHandleScope {
  public:
   InitializedIgnitionHandleScope() {
-    i::FLAG_ignition = true;
     i::FLAG_always_opt = false;
     i::FLAG_allow_natives_syntax = true;
-    CcTest::i_isolate()->interpreter()->Initialize();
   }
 };
 
@@ -190,25 +189,47 @@ TEST(PrimitiveExpressions) {
 
       "var x = 0; return x + 3;\n",
 
+      "var x = 0; return 3 + x;\n",
+
       "var x = 0; return x - 3;\n",
+
+      "var x = 0; return 3 - x;\n",
 
       "var x = 4; return x * 3;\n",
 
+      "var x = 4; return 3 * x;\n",
+
       "var x = 4; return x / 3;\n",
+
+      "var x = 4; return 3 / x;\n",
 
       "var x = 4; return x % 3;\n",
 
+      "var x = 4; return 3 % x;\n",
+
       "var x = 1; return x | 2;\n",
+
+      "var x = 1; return 2 | x;\n",
 
       "var x = 1; return x ^ 2;\n",
 
+      "var x = 1; return 2 ^ x;\n",
+
       "var x = 1; return x & 2;\n",
+
+      "var x = 1; return 2 & x;\n",
 
       "var x = 10; return x << 3;\n",
 
+      "var x = 10; return 3 << x;\n",
+
       "var x = 10; return x >> 3;\n",
 
+      "var x = 10; return 3 >> x;\n",
+
       "var x = 10; return x >>> 3;\n",
+
+      "var x = 10; return 3 >>> x;\n",
 
       "var x = 0; return (x, 3);\n",
   };
@@ -310,10 +331,6 @@ TEST(HeapNumberConstants) {
       "var a = 1.2; return 2.6;\n",
 
       "var a = 3.14; return 3.14;\n",
-
-      "var a;"                    //
-      REPEAT_256("\na = 1.414;")  //
-      " a = 3.14;\n",
   };
 
   CHECK(CompareTexts(BuildActual(printer, snippets),
@@ -464,6 +481,9 @@ TEST(PropertyCall) {
       REPEAT_127(" a.func;\n")  //
       " return a.func(); }\n"
       "f(" FUNC_ARG ")",
+
+      "function f(a) { return a.func(1).func(2).func(3); }\n"
+      "f(new (function Obj() { this.func = function(a) { return this; }})())",
   };
 
   CHECK(CompareTexts(BuildActual(printer, snippets),
@@ -580,9 +600,6 @@ TEST(CallRuntime) {
       "f(undefined);\n",
 
       "function f() { return %Add(1, 2) }\n"
-      "f();\n",
-
-      "function f() { return %spread_iterable([1]) }\n"
       "f();\n",
   };
 
@@ -926,25 +943,6 @@ TEST(BasicLoops) {
                      LoadGolden("BasicLoops.golden")));
 }
 
-TEST(JumpsRequiringConstantWideOperands) {
-  InitializedIgnitionHandleScope scope;
-  BytecodeExpectationsPrinter printer(CcTest::isolate());
-  const char* snippets[] = {
-    REPEAT_256("var x = 0.1;\n")
-    REPEAT_32("var x = 0.2;\n")
-    REPEAT_16("var x = 0.3;\n")
-    REPEAT_8("var x = 0.4;\n")
-    "for (var i = 0; i < 3; i++) {\n"
-    "  if (i == 1) continue;\n"
-    "  if (i == 2) break;\n"
-    "}\n"
-    "return 3;\n",
-  };
-
-  CHECK(CompareTexts(BuildActual(printer, snippets),
-                     LoadGolden("JumpsRequiringConstantWideOperands.golden")));
-}
-
 TEST(UnaryOperators) {
   InitializedIgnitionHandleScope scope;
   BytecodeExpectationsPrinter printer(CcTest::isolate());
@@ -1002,6 +1000,81 @@ TEST(Typeof) {
 
   CHECK(CompareTexts(BuildActual(printer, snippets, "", "\nf();"),
                      LoadGolden("Typeof.golden")));
+}
+
+TEST(CompareTypeOf) {
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+
+  const char* snippets[] = {
+      "return typeof(1) === 'number';\n",
+
+      "return 'string' === typeof('foo');\n",
+
+      "return typeof(true) == 'boolean';\n",
+
+      "return 'string' === typeof(undefined);\n",
+
+      "return 'unknown' === typeof(undefined);\n",
+  };
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("CompareTypeOf.golden")));
+}
+
+TEST(CompareNil) {
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+
+  const char* snippets[] = {
+      "var a = 1;\n"
+      "return a === null;\n",
+
+      "var a = undefined;\n"
+      "return undefined === a;\n",
+
+      "var a = undefined;\n"
+      "return undefined !== a;\n",
+
+      "var a = 2;\n"
+      "return a != null;\n",
+
+      "var a = undefined;\n"
+      "return undefined == a;\n",
+
+      "var a = undefined;\n"
+      "return undefined === a ? 1 : 2;\n",
+
+      "var a = 0;\n"
+      "return null == a ? 1 : 2;\n",
+
+      "var a = 0;\n"
+      "return undefined !== a ? 1 : 2;\n",
+
+      "var a = 0;\n"
+      "return a === null ? 1 : 2;\n",
+
+      "var a = 0;\n"
+      "if (a === null) {\n"
+      "  return 1;\n"
+      "} else {\n"
+      "  return 2;\n"
+      "}\n",
+
+      "var a = 0;\n"
+      "if (a != undefined) {\n"
+      "  return 1;\n"
+      "}\n",
+
+      "var a = undefined;\n"
+      "var b = 0;\n"
+      "while (a !== undefined) {\n"
+      "  b++;\n"
+      "}\n",
+  };
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("CompareNil.golden")));
 }
 
 TEST(Delete) {
@@ -1098,20 +1171,6 @@ TEST(RegExpLiterals) {
                      LoadGolden("RegExpLiterals.golden")));
 }
 
-TEST(RegExpLiteralsWide) {
-  InitializedIgnitionHandleScope scope;
-  BytecodeExpectationsPrinter printer(CcTest::isolate());
-
-  const char* snippets[] = {
-      "var a;"                   //
-      REPEAT_256("\na = 1.23;")  //
-      "\nreturn /ab+d/;\n",
-  };
-
-  CHECK(CompareTexts(BuildActual(printer, snippets),
-                     LoadGolden("RegExpLiteralsWide.golden")));
-}
-
 TEST(ArrayLiterals) {
   InitializedIgnitionHandleScope scope;
   BytecodeExpectationsPrinter printer(CcTest::isolate());
@@ -1128,20 +1187,6 @@ TEST(ArrayLiterals) {
 
   CHECK(CompareTexts(BuildActual(printer, snippets),
                      LoadGolden("ArrayLiterals.golden")));
-}
-
-TEST(ArrayLiteralsWide) {
-  InitializedIgnitionHandleScope scope;
-  BytecodeExpectationsPrinter printer(CcTest::isolate());
-
-  const char* snippets[] = {
-      "var a;"                   //
-      REPEAT_256("\na = 1.23;")  //
-      "\nreturn [ 1 , 2 ];\n",
-  };
-
-  CHECK(CompareTexts(BuildActual(printer, snippets),
-                     LoadGolden("ArrayLiteralsWide.golden")));
 }
 
 TEST(ObjectLiterals) {
@@ -1182,19 +1227,6 @@ TEST(ObjectLiterals) {
 
   CHECK(CompareTexts(BuildActual(printer, snippets),
                      LoadGolden("ObjectLiterals.golden")));
-}
-
-TEST(ObjectLiteralsWide) {
-  InitializedIgnitionHandleScope scope;
-  BytecodeExpectationsPrinter printer(CcTest::isolate());
-  const char* snippets[] = {
-      "var a;"                   //
-      REPEAT_256("\na = 1.23;")  //
-      "\nreturn { name: 'string', val: 9.2 };\n",
-  };
-
-  CHECK(CompareTexts(BuildActual(printer, snippets),
-                     LoadGolden("ObjectLiteralsWide.golden")));
 }
 
 TEST(TopLevelObjectLiterals) {
@@ -1743,6 +1775,54 @@ TEST(RemoveRedundantLdar) {
                      LoadGolden("RemoveRedundantLdar.golden")));
 }
 
+TEST(GenerateTestUndetectable) {
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+  const char* snippets[] = {
+      "var obj_a = {val:1};\n"
+      "var b = 10;\n"
+      "if (obj_a == null) { b = 20;}\n"
+      "return b;\n",
+
+      "var obj_a = {val:1};\n"
+      "var b = 10;\n"
+      "if (obj_a == undefined) { b = 20;}\n"
+      "return b;\n",
+
+      "var obj_a = {val:1};\n"
+      "var b = 10;\n"
+      "if (obj_a != null) { b = 20;}\n"
+      "return b;\n",
+
+      "var obj_a = {val:1};\n"
+      "var b = 10;\n"
+      "if (obj_a != undefined) { b = 20;}\n"
+      "return b;\n",
+
+      "var obj_a = {val:1};\n"
+      "var b = 10;\n"
+      "if (obj_a === null) { b = 20;}\n"
+      "return b;\n",
+
+      "var obj_a = {val:1};\n"
+      "var b = 10;\n"
+      "if (obj_a === undefined) { b = 20;}\n"
+      "return b;\n",
+
+      "var obj_a = {val:1};\n"
+      "var b = 10;\n"
+      "if (obj_a !== null) { b = 20;}\n"
+      "return b;\n",
+
+      "var obj_a = {val:1};\n"
+      "var b = 10;\n"
+      "if (obj_a !== undefined) { b = 20;}\n"
+      "return b;\n"};
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("GenerateTestUndetectable.golden")));
+}
+
 TEST(AssignmentsInBinaryExpression) {
   InitializedIgnitionHandleScope scope;
   BytecodeExpectationsPrinter printer(CcTest::isolate());
@@ -1867,41 +1947,6 @@ TEST(LookupSlotInEval) {
                                    "f1();");
 
   CHECK(CompareTexts(actual, LoadGolden("LookupSlotInEval.golden")));
-}
-
-TEST(LookupSlotWideInEval) {
-  InitializedIgnitionHandleScope scope;
-  BytecodeExpectationsPrinter printer(CcTest::isolate());
-  printer.set_wrap(false);
-  printer.set_test_function_name("f");
-
-  const char* snippets[] = {
-      REPEAT_256("    \"var y = 2.3;\" +\n")  //
-      "    \"return x;\" +\n",
-
-      REPEAT_256("    \"var y = 2.3;\" +\n")  //
-      "    \"return typeof x;\" +\n",
-
-      REPEAT_256("    \"var y = 2.3;\" +\n")  //
-      "    \"x = 10;\" +\n",
-
-      "    \"'use strict';\" +\n"             //
-      REPEAT_256("    \"var y = 2.3;\" +\n")  //
-      "    \"x = 10;\" +\n",
-  };
-
-  std::string actual = BuildActual(printer, snippets,
-                                   "var f;\n"
-                                   "var x = 1;\n"
-                                   "function f1() {\n"
-                                   "  eval(\"function t() {\" +\n",
-
-                                   "  \"};\" +\n"
-                                   "  \"f = t; f();\"\n);\n"
-                                   "}\n"
-                                   "f1();");
-
-  CHECK(CompareTexts(actual, LoadGolden("LookupSlotWideInEval.golden")));
 }
 
 TEST(DeleteLookupSlotInEval) {
@@ -2118,6 +2163,9 @@ TEST(ClassDeclarations) {
       "var count = 0;\n"
       "class C { constructor() { count++; }}\n"
       "return new C();\n",
+
+      "(class {})\n"
+      "class E { static name () {}}\n",
   };
 
   CHECK(CompareTexts(BuildActual(printer, snippets),
@@ -2182,6 +2230,187 @@ TEST(ClassAndSuperClass) {
                      LoadGolden("ClassAndSuperClass.golden")));
 }
 
+TEST(PublicClassFields) {
+  bool old_flag = i::FLAG_harmony_public_fields;
+  i::FLAG_harmony_public_fields = true;
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+
+  const char* snippets[] = {
+      "{\n"
+      "  class A {\n"
+      "    a;\n"
+      "    ['b'];\n"
+      "  }\n"
+      "\n"
+      "  class B {\n"
+      "    a = 1;\n"
+      "    ['b'] = this.a;\n"
+      "  }\n"
+      "  new A;\n"
+      "  new B;\n"
+      "}\n",
+
+      "{\n"
+      "  class A extends class {} {\n"
+      "    a;\n"
+      "    ['b'];\n"
+      "  }\n"
+      "\n"
+      "  class B extends class {} {\n"
+      "    a = 1;\n"
+      "    ['b'] = this.a;\n"
+      "    foo() { return 1; }\n"
+      "    constructor() {\n"
+      "      super();\n"
+      "    }\n"
+      "  }\n"
+      "\n"
+      "  class C extends B {\n"
+      "    a = 1;\n"
+      "    ['b'] = this.a;\n"
+      "    constructor() {\n"
+      "      (() => super())();\n"
+      "    }\n"
+      "  }\n"
+      "\n"
+      "  new A;\n"
+      "  new B;\n"
+      "  new C;\n"
+      "}\n"};
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("PublicClassFields.golden")));
+  i::FLAG_harmony_public_fields = old_flag;
+}
+
+TEST(PrivateClassFields) {
+  bool old_flag = i::FLAG_harmony_private_fields;
+  i::FLAG_harmony_private_fields = true;
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+
+  const char* snippets[] = {
+      "{\n"
+      "  class A {\n"
+      "    #a;\n"
+      "    constructor() {\n"
+      "      this.#a = 1;\n"
+      "    }\n"
+      "  }\n"
+      "\n"
+      "  class B {\n"
+      "    #a = 1;\n"
+      "  }\n"
+      "  new A;\n"
+      "  new B;\n"
+      "}\n",
+
+      "{\n"
+      "  class A extends class {} {\n"
+      "    #a;\n"
+      "    constructor() {\n"
+      "      super();\n"
+      "      this.#a = 1;\n"
+      "    }\n"
+      "  }\n"
+      "\n"
+      "  class B extends class {} {\n"
+      "    #a = 1;\n"
+      "    #b = this.#a;\n"
+      "    foo() { return this.#a; }\n"
+      "    bar(v) { this.#b = v; }\n"
+      "    constructor() {\n"
+      "      super();\n"
+      "      this.foo();\n"
+      "      this.bar(3);\n"
+      "    }\n"
+      "  }\n"
+      "\n"
+      "  class C extends B {\n"
+      "    #a = 2;\n"
+      "    constructor() {\n"
+      "      (() => super())();\n"
+      "    }\n"
+      "  }\n"
+      "\n"
+      "  new A;\n"
+      "  new B;\n"
+      "  new C;\n"
+      "};\n"};
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("PrivateClassFields.golden")));
+  i::FLAG_harmony_private_fields = old_flag;
+}
+
+TEST(StaticClassFields) {
+  bool old_flag = i::FLAG_harmony_public_fields;
+  bool old_static_flag = i::FLAG_harmony_static_fields;
+  i::FLAG_harmony_public_fields = true;
+  i::FLAG_harmony_static_fields = true;
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+
+  const char* snippets[] = {
+      "{\n"
+      "  class A {\n"
+      "    a;\n"
+      "    ['b'];\n"
+      "    static c;\n"
+      "    static ['d'];\n"
+      "  }\n"
+      "\n"
+      "  class B {\n"
+      "    a = 1;\n"
+      "    ['b'] = this.a;\n"
+      "    static c = 3;\n"
+      "    static ['d'] = this.c;\n"
+      "  }\n"
+      "  new A;\n"
+      "  new B;\n"
+      "}\n",
+
+      "{\n"
+      "  class A extends class {} {\n"
+      "    a;\n"
+      "    ['b'];\n"
+      "    static c;\n"
+      "    static ['d'];\n"
+      "  }\n"
+      "\n"
+      "  class B extends class {} {\n"
+      "    a = 1;\n"
+      "    ['b'] = this.a;\n"
+      "    static c = 3;\n"
+      "    static ['d'] = this.c;\n"
+      "    foo() { return 1; }\n"
+      "    constructor() {\n"
+      "      super();\n"
+      "    }\n"
+      "  }\n"
+      "\n"
+      "  class C extends B {\n"
+      "    a = 1;\n"
+      "    ['b'] = this.a;\n"
+      "    static c = 3;\n"
+      "    static ['d'] = super.foo();\n"
+      "    constructor() {\n"
+      "      (() => super())();\n"
+      "    }\n"
+      "  }\n"
+      "\n"
+      "  new A;\n"
+      "  new B;\n"
+      "  new C;\n"
+      "}\n"};
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("StaticClassFields.golden")));
+  i::FLAG_harmony_public_fields = old_flag;
+  i::FLAG_harmony_static_fields = old_static_flag;
+}
+
 TEST(Generators) {
   InitializedIgnitionHandleScope scope;
   BytecodeExpectationsPrinter printer(CcTest::isolate());
@@ -2197,10 +2426,39 @@ TEST(Generators) {
 
       "function* f() { for (let x of [42]) yield x }\n"
       "f();\n",
+
+      "function* g() { yield 42 }\n"
+      "function* f() { yield* g() }\n"
+      "f();\n",
   };
 
   CHECK(CompareTexts(BuildActual(printer, snippets),
                      LoadGolden("Generators.golden")));
+}
+
+TEST(AsyncGenerators) {
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+  printer.set_wrap(false);
+  printer.set_test_function_name("f");
+
+  const char* snippets[] = {
+      "async function* f() { }\n"
+      "f();\n",
+
+      "async function* f() { yield 42 }\n"
+      "f();\n",
+
+      "async function* f() { for (let x of [42]) yield x }\n"
+      "f();\n",
+
+      "function* g() { yield 42 }\n"
+      "async function* f() { yield* g() }\n"
+      "f();\n",
+  };
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("AsyncGenerators.golden")));
 }
 
 TEST(Modules) {
@@ -2246,6 +2504,306 @@ TEST(Modules) {
   CHECK(CompareTexts(BuildActual(printer, snippets),
                      LoadGolden("Modules.golden")));
 }
+
+TEST(SuperCallAndSpread) {
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+  printer.set_wrap(false);
+  printer.set_test_function_name("test");
+  const char* snippets[] = {
+      "var test;\n"
+      "(function() {\n"
+      "  class A {\n"
+      "    constructor(...args) { this.baseArgs = args; }\n"
+      "  }\n"
+      "  class B extends A {}\n"
+      "  test = new B(1, 2, 3).constructor;\n"
+      "})();\n",
+
+      "var test;\n"
+      "(function() {\n"
+      "  class A {\n"
+      "    constructor(...args) { this.baseArgs = args; }\n"
+      "  }\n"
+      "  class B extends A {\n"
+      "    constructor(...args) { super(1, ...args); }\n"
+      "  }\n"
+      "  test = new B(1, 2, 3).constructor;\n"
+      "})();\n",
+
+      "var test;\n"
+      "(function() {\n"
+      "  class A {\n"
+      "    constructor(...args) { this.baseArgs = args; }\n"
+      "  }\n"
+      "  class B extends A {\n"
+      "    constructor(...args) { super(1, ...args, 1); }\n"
+      "  }\n"
+      "  test = new B(1, 2, 3).constructor;\n"
+      "})();\n",
+  };
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("SuperCallAndSpread.golden")));
+}
+
+TEST(CallAndSpread) {
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+  const char* snippets[] = {"Math.max(...[1, 2, 3]);\n",
+                            "Math.max(0, ...[1, 2, 3]);\n",
+                            "Math.max(0, ...[1, 2, 3], 4);\n"};
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("CallAndSpread.golden")));
+}
+
+TEST(NewAndSpread) {
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+  const char* snippets[] = {
+      "class A { constructor(...args) { this.args = args; } }\n"
+      "new A(...[1, 2, 3]);\n",
+
+      "class A { constructor(...args) { this.args = args; } }\n"
+      "new A(0, ...[1, 2, 3]);\n",
+
+      "class A { constructor(...args) { this.args = args; } }\n"
+      "new A(0, ...[1, 2, 3], 4);\n"};
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("NewAndSpread.golden")));
+}
+
+TEST(ForAwaitOf) {
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+  printer.set_wrap(false);
+  printer.set_test_function_name("f");
+
+  const char* snippets[] = {
+      "async function f() {\n"
+      "  for await (let x of [1, 2, 3]) {}\n"
+      "}\n"
+      "f();\n",
+
+      "async function f() {\n"
+      "  for await (let x of [1, 2, 3]) { return x; }\n"
+      "}\n"
+      "f();\n",
+
+      "async function f() {\n"
+      "  for await (let x of [10, 20, 30]) {\n"
+      "    if (x == 10) continue;\n"
+      "    if (x == 20) break;\n"
+      "  }\n"
+      "}\n"
+      "f();\n",
+
+      "async function f() {\n"
+      "  var x = { 'a': 1, 'b': 2 };\n"
+      "  for (x['a'] of [1,2,3]) { return x['a']; }\n"
+      "}\n"
+      "f();\n"};
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("ForAwaitOf.golden")));
+}
+
+TEST(StandardForLoop) {
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+  printer.set_wrap(false);
+  printer.set_test_function_name("f");
+
+  const char* snippets[] = {
+      "function f() {\n"
+      "  for (let x = 0; x < 10; ++x) { let y = x; }\n"
+      "}\n"
+      "f();\n",
+
+      "function f() {\n"
+      "  for (let x = 0; x < 10; ++x) { eval('1'); }\n"
+      "}\n"
+      "f();\n",
+
+      "function f() {\n"
+      "  for (let x = 0; x < 10; ++x) { (function() { return x; })(); }\n"
+      "}\n"
+      "f();\n",
+
+      "function f() {\n"
+      "  for (let { x, y } = { x: 0, y: 3 }; y > 0; --y) { let z = x + y; }\n"
+      "}\n"
+      "f();\n",
+
+      "function* f() {\n"
+      "  for (let x = 0; x < 10; ++x) { let y = x; }\n"
+      "}\n"
+      "f();\n",
+
+      "function* f() {\n"
+      "  for (let x = 0; x < 10; ++x) yield x;\n"
+      "}\n"
+      "f();\n",
+
+      "async function f() {\n"
+      "  for (let x = 0; x < 10; ++x) { let y = x; }\n"
+      "}\n"
+      "f();\n",
+
+      "async function f() {\n"
+      "  for (let x = 0; x < 10; ++x) await x;\n"
+      "}\n"
+      "f();\n"};
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("StandardForLoop.golden")));
+}
+
+TEST(ForOfLoop) {
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+  printer.set_wrap(false);
+  printer.set_test_function_name("f");
+
+  const char* snippets[] = {
+      "function f(arr) {\n"
+      "  for (let x of arr) { let y = x; }\n"
+      "}\n"
+      "f([1, 2, 3]);\n",
+
+      "function f(arr) {\n"
+      "  for (let x of arr) { eval('1'); }\n"
+      "}\n"
+      "f([1, 2, 3]);\n",
+
+      "function f(arr) {\n"
+      "  for (let x of arr) { (function() { return x; })(); }\n"
+      "}\n"
+      "f([1, 2, 3]);\n",
+
+      "function f(arr) {\n"
+      "  for (let { x, y } of arr) { let z = x + y; }\n"
+      "}\n"
+      "f([{ x: 0, y: 3 }, { x: 1, y: 9 }, { x: -12, y: 17 }]);\n",
+
+      "function* f(arr) {\n"
+      "  for (let x of arr) { let y = x; }\n"
+      "}\n"
+      "f([1, 2, 3]);\n",
+
+      "function* f(arr) {\n"
+      "  for (let x of arr) yield x;\n"
+      "}\n"
+      "f([1, 2, 3]);\n",
+
+      "async function f(arr) {\n"
+      "  for (let x of arr) { let y = x; }\n"
+      "}\n"
+      "f([1, 2, 3]);\n",
+
+      "async function f(arr) {\n"
+      "  for (let x of arr) await x;\n"
+      "}\n"
+      "f([1, 2, 3]);\n"};
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("ForOfLoop.golden")));
+}
+
+TEST(StringConcat) {
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+
+  const char* snippets[] = {
+      "var a = 1;\n"
+      "var b = 2;\n"
+      "return a + b + 'string';\n",
+
+      "var a = 1;\n"
+      "var b = 2;\n"
+      "return 'string' + a + b;\n",
+
+      "var a = 1;\n"
+      "var b = 2;\n"
+      "return a + 'string' + b;\n",
+
+      "var a = 1;\n"
+      "var b = 2;\n"
+      "return 'foo' + a + 'bar' + b + 'baz' + 1;\n",
+
+      "var a = 1;\n"
+      "var b = 2;\n"
+      "return (a + 'string') + ('string' + b);\n",
+
+      "var a = 1;\n"
+      "var b = 2;\n"
+      "function foo(a, b) { };\n"
+      "return 'string' + foo(a, b) + a + b;\n",
+  };
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("StringConcat.golden")));
+}
+
+TEST(TemplateLiterals) {
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+
+  const char* snippets[] = {
+      "var a = 1;\n"
+      "var b = 2;\n"
+      "return `${a}${b}string`;\n",
+
+      "var a = 1;\n"
+      "var b = 2;\n"
+      "return `string${a}${b}`;\n",
+
+      "var a = 1;\n"
+      "var b = 2;\n"
+      "return `${a}string${b}`;\n",
+
+      "var a = 1;\n"
+      "var b = 2;\n"
+      "return `foo${a}bar${b}baz${1}`;\n",
+
+      "var a = 1;\n"
+      "var b = 2;\n"
+      "return `${a}string` + `string${b}`;\n",
+
+      "var a = 1;\n"
+      "var b = 2;\n"
+      "function foo(a, b) { };\n"
+      "return `string${foo(a, b)}${a}${b}`;\n",
+  };
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("TemplateLiterals.golden")));
+}
+
+#undef XSTR
+#undef STR
+#undef UNIQUE_VAR
+#undef REPEAT_2
+#undef REPEAT_4
+#undef REPEAT_8
+#undef REPEAT_16
+#undef REPEAT_32
+#undef REPEAT_64
+#undef REPEAT_128
+#undef REPEAT_256
+#undef REPEAT_127
+#undef REPEAT_249
+#undef REPEAT_2_UNIQUE_VARS
+#undef REPEAT_4_UNIQUE_VARS
+#undef REPEAT_8_UNIQUE_VARS
+#undef REPEAT_16_UNIQUE_VARS
+#undef REPEAT_32_UNIQUE_VARS
+#undef REPEAT_64_UNIQUE_VARS
+#undef REPEAT_128_UNIQUE_VARS
+#undef REPEAT_250_UNIQUE_VARS
+#undef FUNC_ARG
 
 }  // namespace interpreter
 }  // namespace internal

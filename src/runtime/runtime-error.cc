@@ -15,9 +15,15 @@ namespace internal {
 
 RUNTIME_FUNCTION(Runtime_ErrorToString) {
   HandleScope scope(isolate);
-  DCHECK(args.length() == 1);
+  DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(Object, recv, 0);
   RETURN_RESULT_OR_FAILURE(isolate, ErrorUtils::ToString(isolate, recv));
+}
+
+RUNTIME_FUNCTION(Runtime_IsJSError) {
+  SealHandleScope shs(isolate);
+  DCHECK_EQ(1, args.length());
+  return isolate->heap()->ToBoolean(args[0]->IsJSError());
 }
 
 }  // namespace internal

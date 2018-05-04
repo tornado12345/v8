@@ -6,6 +6,7 @@
 #define V8_RUNTIME_RUNTIME_UTILS_H_
 
 #include "src/base/logging.h"
+#include "src/globals.h"
 #include "src/runtime/runtime.h"
 
 namespace v8 {
@@ -24,7 +25,7 @@ namespace internal {
 
 #define CONVERT_NUMBER_ARG_HANDLE_CHECKED(name, index) \
   CHECK(args[index]->IsNumber());                      \
-  Handle<Object> name = args.at<Object>(index);
+  Handle<Object> name = args.at(index);
 
 // Cast the given object to a boolean and store it in a variable with
 // the given name.  If the object is not a boolean we crash safely.
@@ -47,10 +48,10 @@ namespace internal {
 
 // Cast the given argument to a size_t and store its value in a variable with
 // the given name.  If the argument is not a size_t we crash safely.
-#define CONVERT_SIZE_ARG_CHECKED(name, index)            \
-  CHECK(args[index]->IsNumber());                        \
-  Handle<Object> name##_object = args.at<Object>(index); \
-  size_t name = 0;                                       \
+#define CONVERT_SIZE_ARG_CHECKED(name, index)    \
+  CHECK(args[index]->IsNumber());                \
+  Handle<Object> name##_object = args.at(index); \
+  size_t name = 0;                               \
   CHECK(TryNumberToSize(*name##_object, &name));
 
 // Call the specified converter on the object *comand store the result in
@@ -93,9 +94,9 @@ namespace internal {
 // Cast the given argument to PropertyAttributes and store its value in a
 // variable with the given name.  If the argument is not a Smi or the
 // enum value is out of range, we crash safely.
-#define CONVERT_PROPERTY_ATTRIBUTES_CHECKED(name, index)                     \
-  CHECK(args[index]->IsSmi());                                               \
-  CHECK((args.smi_at(index) & ~(READ_ONLY | DONT_ENUM | DONT_DELETE)) == 0); \
+#define CONVERT_PROPERTY_ATTRIBUTES_CHECKED(name, index)                    \
+  CHECK(args[index]->IsSmi());                                              \
+  CHECK_EQ(args.smi_at(index) & ~(READ_ONLY | DONT_ENUM | DONT_DELETE), 0); \
   PropertyAttributes name = static_cast<PropertyAttributes>(args.smi_at(index));
 
 // A mechanism to return a pair of Object pointers in registers (if possible).
@@ -150,22 +151,6 @@ static inline ObjectPair MakePair(Object* x, Object* y) {
 #endif
 }
 #endif
-
-
-// A mechanism to return a triple of Object pointers. In all calling
-// conventions, a struct of two pointers is returned in memory,
-// allocated by the caller, and passed as a pointer in a hidden first parameter.
-struct ObjectTriple {
-  Object* x;
-  Object* y;
-  Object* z;
-};
-
-static inline ObjectTriple MakeTriple(Object* x, Object* y, Object* z) {
-  ObjectTriple result = {x, y, z};
-  // ObjectTriple is assigned to a hidden first argument.
-  return result;
-}
 
 }  // namespace internal
 }  // namespace v8
