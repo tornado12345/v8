@@ -79,7 +79,7 @@ std::ostream& operator<<(std::ostream& os, FieldAccess const& access) {
 #endif
   os << access.type << ", " << access.machine_type << ", "
      << access.write_barrier_kind;
-  if (FLAG_untrusted_code_mitigations || FLAG_branch_load_poisoning) {
+  if (FLAG_untrusted_code_mitigations) {
     os << ", " << access.load_sensitivity;
   }
   os << "]";
@@ -118,7 +118,7 @@ std::ostream& operator<<(std::ostream& os, ElementAccess const& access) {
   os << access.base_is_tagged << ", " << access.header_size << ", "
      << access.type << ", " << access.machine_type << ", "
      << access.write_barrier_kind;
-  if (FLAG_untrusted_code_mitigations || FLAG_branch_load_poisoning) {
+  if (FLAG_untrusted_code_mitigations) {
     os << ", " << access.load_sensitivity;
   }
   return os;
@@ -141,7 +141,9 @@ const ElementAccess& ElementAccessOf(const Operator* op) {
 
 ExternalArrayType ExternalArrayTypeOf(const Operator* op) {
   DCHECK(op->opcode() == IrOpcode::kLoadTypedElement ||
-         op->opcode() == IrOpcode::kStoreTypedElement);
+         op->opcode() == IrOpcode::kLoadDataViewElement ||
+         op->opcode() == IrOpcode::kStoreTypedElement ||
+         op->opcode() == IrOpcode::kStoreDataViewElement);
   return OpParameter<ExternalArrayType>(op);
 }
 
@@ -164,9 +166,31 @@ std::ostream& operator<<(std::ostream& os, CheckFloat64HoleMode mode) {
   UNREACHABLE();
 }
 
-CheckFloat64HoleMode CheckFloat64HoleModeOf(const Operator* op) {
+CheckFloat64HoleParameters const& CheckFloat64HoleParametersOf(
+    Operator const* op) {
   DCHECK_EQ(IrOpcode::kCheckFloat64Hole, op->opcode());
-  return OpParameter<CheckFloat64HoleMode>(op);
+  return OpParameter<CheckFloat64HoleParameters>(op);
+}
+
+std::ostream& operator<<(std::ostream& os,
+                         CheckFloat64HoleParameters const& params) {
+  os << params.mode();
+  if (params.feedback().IsValid()) os << "; " << params.feedback();
+  return os;
+}
+
+size_t hash_value(const CheckFloat64HoleParameters& params) {
+  return base::hash_combine(params.mode(), params.feedback());
+}
+
+bool operator==(CheckFloat64HoleParameters const& lhs,
+                CheckFloat64HoleParameters const& rhs) {
+  return lhs.mode() == rhs.mode() && lhs.feedback() == rhs.feedback();
+}
+
+bool operator!=(CheckFloat64HoleParameters const& lhs,
+                CheckFloat64HoleParameters const& rhs) {
+  return !(lhs == rhs);
 }
 
 CheckForMinusZeroMode CheckMinusZeroModeOf(const Operator* op) {
@@ -199,40 +223,6 @@ std::ostream& operator<<(std::ostream& os, CheckMapsFlags flags) {
   return os;
 }
 
-MapsParameterInfo::MapsParameterInfo(ZoneHandleSet<Map> const& maps)
-    : maps_(maps), instance_type_(Nothing<InstanceType>()) {
-  DCHECK_LT(0, maps.size());
-  instance_type_ = Just(maps.at(0)->instance_type());
-  for (size_t i = 1; i < maps.size(); ++i) {
-    if (instance_type_.FromJust() != maps.at(i)->instance_type()) {
-      instance_type_ = Nothing<InstanceType>();
-      break;
-    }
-  }
-}
-
-std::ostream& operator<<(std::ostream& os, MapsParameterInfo const& p) {
-  ZoneHandleSet<Map> const& maps = p.maps();
-  InstanceType instance_type;
-  if (p.instance_type().To(&instance_type)) {
-    os << ", " << instance_type;
-  }
-  for (size_t i = 0; i < maps.size(); ++i) {
-    os << ", " << Brief(*maps[i]);
-  }
-  return os;
-}
-
-bool operator==(MapsParameterInfo const& lhs, MapsParameterInfo const& rhs) {
-  return lhs.maps() == rhs.maps();
-}
-
-bool operator!=(MapsParameterInfo const& lhs, MapsParameterInfo const& rhs) {
-  return !(lhs == rhs);
-}
-
-size_t hash_value(MapsParameterInfo const& p) { return hash_value(p.maps()); }
-
 bool operator==(CheckMapsParameters const& lhs,
                 CheckMapsParameters const& rhs) {
   return lhs.flags() == rhs.flags() && lhs.maps() == rhs.maps() &&
@@ -244,7 +234,7 @@ size_t hash_value(CheckMapsParameters const& p) {
 }
 
 std::ostream& operator<<(std::ostream& os, CheckMapsParameters const& p) {
-  os << p.flags() << p.maps_info();
+  os << p.flags() << p.maps();
   if (p.feedback().IsValid()) {
     os << "; " << p.feedback();
   }
@@ -256,14 +246,14 @@ CheckMapsParameters const& CheckMapsParametersOf(Operator const* op) {
   return OpParameter<CheckMapsParameters>(op);
 }
 
-MapsParameterInfo const& CompareMapsParametersOf(Operator const* op) {
+ZoneHandleSet<Map> const& CompareMapsParametersOf(Operator const* op) {
   DCHECK_EQ(IrOpcode::kCompareMaps, op->opcode());
-  return OpParameter<MapsParameterInfo>(op);
+  return OpParameter<ZoneHandleSet<Map>>(op);
 }
 
-MapsParameterInfo const& MapGuardMapsOf(Operator const* op) {
+ZoneHandleSet<Map> const& MapGuardMapsOf(Operator const* op) {
   DCHECK_EQ(IrOpcode::kMapGuard, op->opcode());
-  return OpParameter<MapsParameterInfo>(op);
+  return OpParameter<ZoneHandleSet<Map>>(op);
 }
 
 size_t hash_value(CheckTaggedInputMode mode) {
@@ -581,11 +571,6 @@ AbortReason AbortReasonOf(const Operator* op) {
   return static_cast<AbortReason>(OpParameter<int>(op));
 }
 
-DeoptimizeReason DeoptimizeReasonOf(const Operator* op) {
-  DCHECK_EQ(IrOpcode::kCheckIf, op->opcode());
-  return OpParameter<DeoptimizeReason>(op);
-}
-
 const CheckTaggedInputParameters& CheckTaggedInputParametersOf(
     const Operator* op) {
   DCHECK(op->opcode() == IrOpcode::kCheckedTruncateTaggedToWord32 ||
@@ -612,8 +597,10 @@ bool operator==(CheckTaggedInputParameters const& lhs,
 }
 
 const CheckMinusZeroParameters& CheckMinusZeroParametersOf(const Operator* op) {
-  DCHECK(IrOpcode::kCheckedTaggedToInt32 == op->opcode() ||
-         IrOpcode::kCheckedFloat64ToInt32 == op->opcode());
+  DCHECK(op->opcode() == IrOpcode::kCheckedTaggedToInt32 ||
+         op->opcode() == IrOpcode::kCheckedTaggedToInt64 ||
+         op->opcode() == IrOpcode::kCheckedFloat64ToInt32 ||
+         op->opcode() == IrOpcode::kCheckedFloat64ToInt64);
   return OpParameter<CheckMinusZeroParameters>(op);
 }
 
@@ -690,6 +677,7 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(NumberToUint32, Operator::kNoProperties, 1, 0)               \
   V(NumberToUint8Clamped, Operator::kNoProperties, 1, 0)         \
   V(NumberSilenceNaN, Operator::kNoProperties, 1, 0)             \
+  V(StringConcat, Operator::kNoProperties, 3, 0)                 \
   V(StringToNumber, Operator::kNoProperties, 1, 0)               \
   V(StringFromSingleCharCode, Operator::kNoProperties, 1, 0)     \
   V(StringIndexOf, Operator::kNoProperties, 3, 0)                \
@@ -701,14 +689,18 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(PlainPrimitiveToWord32, Operator::kNoProperties, 1, 0)       \
   V(PlainPrimitiveToFloat64, Operator::kNoProperties, 1, 0)      \
   V(ChangeTaggedSignedToInt32, Operator::kNoProperties, 1, 0)    \
+  V(ChangeTaggedSignedToInt64, Operator::kNoProperties, 1, 0)    \
   V(ChangeTaggedToInt32, Operator::kNoProperties, 1, 0)          \
+  V(ChangeTaggedToInt64, Operator::kNoProperties, 1, 0)          \
   V(ChangeTaggedToUint32, Operator::kNoProperties, 1, 0)         \
   V(ChangeTaggedToFloat64, Operator::kNoProperties, 1, 0)        \
   V(ChangeTaggedToTaggedSigned, Operator::kNoProperties, 1, 0)   \
   V(ChangeFloat64ToTaggedPointer, Operator::kNoProperties, 1, 0) \
   V(ChangeInt31ToTaggedSigned, Operator::kNoProperties, 1, 0)    \
   V(ChangeInt32ToTagged, Operator::kNoProperties, 1, 0)          \
+  V(ChangeInt64ToTagged, Operator::kNoProperties, 1, 0)          \
   V(ChangeUint32ToTagged, Operator::kNoProperties, 1, 0)         \
+  V(ChangeUint64ToTagged, Operator::kNoProperties, 1, 0)         \
   V(ChangeTaggedToBit, Operator::kNoProperties, 1, 0)            \
   V(ChangeBitToTagged, Operator::kNoProperties, 1, 0)            \
   V(TruncateTaggedToBit, Operator::kNoProperties, 1, 0)          \
@@ -721,6 +713,7 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(ObjectIsConstructor, Operator::kNoProperties, 1, 0)          \
   V(ObjectIsDetectableCallable, Operator::kNoProperties, 1, 0)   \
   V(ObjectIsMinusZero, Operator::kNoProperties, 1, 0)            \
+  V(NumberIsMinusZero, Operator::kNoProperties, 1, 0)            \
   V(ObjectIsNaN, Operator::kNoProperties, 1, 0)                  \
   V(NumberIsNaN, Operator::kNoProperties, 1, 0)                  \
   V(ObjectIsNonCallable, Operator::kNoProperties, 1, 0)          \
@@ -758,19 +751,20 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(SpeculativeNumberLessThan)                \
   V(SpeculativeNumberLessThanOrEqual)
 
-#define CHECKED_OP_LIST(V)               \
-  V(CheckEqualsInternalizedString, 2, 0) \
-  V(CheckEqualsSymbol, 2, 0)             \
-  V(CheckHeapObject, 1, 1)               \
-  V(CheckInternalizedString, 1, 1)       \
-  V(CheckNotTaggedHole, 1, 1)            \
-  V(CheckReceiver, 1, 1)                 \
-  V(CheckSymbol, 1, 1)                   \
-  V(CheckedInt32Add, 2, 1)               \
-  V(CheckedInt32Div, 2, 1)               \
-  V(CheckedInt32Mod, 2, 1)               \
-  V(CheckedInt32Sub, 2, 1)               \
-  V(CheckedUint32Div, 2, 1)              \
+#define CHECKED_OP_LIST(V)                \
+  V(CheckEqualsInternalizedString, 2, 0)  \
+  V(CheckEqualsSymbol, 2, 0)              \
+  V(CheckHeapObject, 1, 1)                \
+  V(CheckInternalizedString, 1, 1)        \
+  V(CheckNotTaggedHole, 1, 1)             \
+  V(CheckReceiver, 1, 1)                  \
+  V(CheckReceiverOrNullOrUndefined, 1, 1) \
+  V(CheckSymbol, 1, 1)                    \
+  V(CheckedInt32Add, 2, 1)                \
+  V(CheckedInt32Div, 2, 1)                \
+  V(CheckedInt32Mod, 2, 1)                \
+  V(CheckedInt32Sub, 2, 1)                \
+  V(CheckedUint32Div, 2, 1)               \
   V(CheckedUint32Mod, 2, 1)
 
 #define CHECKED_WITH_FEEDBACK_OP_LIST(V) \
@@ -779,11 +773,18 @@ bool operator==(CheckMinusZeroParameters const& lhs,
   V(CheckSmi, 1, 1)                      \
   V(CheckString, 1, 1)                   \
   V(CheckedInt32ToTaggedSigned, 1, 1)    \
+  V(CheckedInt64ToInt32, 1, 1)           \
+  V(CheckedInt64ToTaggedSigned, 1, 1)    \
   V(CheckedTaggedSignedToInt32, 1, 1)    \
   V(CheckedTaggedToTaggedPointer, 1, 1)  \
   V(CheckedTaggedToTaggedSigned, 1, 1)   \
   V(CheckedUint32ToInt32, 1, 1)          \
-  V(CheckedUint32ToTaggedSigned, 1, 1)
+  V(CheckedUint32ToTaggedSigned, 1, 1)   \
+  V(CheckedUint64Bounds, 2, 1)           \
+  V(CheckedUint64ToInt32, 1, 1)          \
+  V(CheckedUint64ToTaggedSigned, 1, 1)
+
+#define CHECKED_BOUNDS_OP_LIST(V) V(CheckedUint32Bounds)
 
 struct SimplifiedOperatorGlobalCache final {
 #define PURE(Name, properties, value_input_count, control_input_count)     \
@@ -833,12 +834,28 @@ struct SimplifiedOperatorGlobalCache final {
   CHECKED_WITH_FEEDBACK_OP_LIST(CHECKED_WITH_FEEDBACK)
 #undef CHECKED_WITH_FEEDBACK
 
+#define CHECKED_BOUNDS(Name)                                                  \
+  struct Name##Operator final : public Operator1<CheckBoundsParameters> {     \
+    Name##Operator(VectorSlotPair feedback, CheckBoundsParameters::Mode mode) \
+        : Operator1<CheckBoundsParameters>(                                   \
+              IrOpcode::k##Name, Operator::kFoldable | Operator::kNoThrow,    \
+              #Name, 2, 1, 1, 1, 1, 0,                                        \
+              CheckBoundsParameters(feedback, mode)) {}                       \
+  };                                                                          \
+  Name##Operator k##Name##Deopting = {                                        \
+      VectorSlotPair(), CheckBoundsParameters::kDeoptOnOutOfBounds};          \
+  Name##Operator k##Name##Aborting = {                                        \
+      VectorSlotPair(), CheckBoundsParameters::kAbortOnOutOfBounds};
+  CHECKED_BOUNDS_OP_LIST(CHECKED_BOUNDS)
+#undef CHECKED_BOUNDS
+
   template <DeoptimizeReason kDeoptimizeReason>
-  struct CheckIfOperator final : public Operator1<DeoptimizeReason> {
+  struct CheckIfOperator final : public Operator1<CheckIfParameters> {
     CheckIfOperator()
-        : Operator1<DeoptimizeReason>(
+        : Operator1<CheckIfParameters>(
               IrOpcode::kCheckIf, Operator::kFoldable | Operator::kNoThrow,
-              "CheckIf", 1, 1, 1, 0, 1, 0, kDeoptimizeReason) {}
+              "CheckIf", 1, 1, 1, 0, 1, 0,
+              CheckIfParameters(kDeoptimizeReason, VectorSlotPair())) {}
   };
 #define CHECK_IF(Name, message) \
   CheckIfOperator<DeoptimizeReason::k##Name> kCheckIf##Name;
@@ -870,13 +887,6 @@ struct SimplifiedOperatorGlobalCache final {
       kStringFromSingleCodePointOperatorUTF16;
   StringFromSingleCodePointOperator<UnicodeEncoding::UTF32>
       kStringFromSingleCodePointOperatorUTF32;
-
-  struct ArrayBufferWasNeuteredOperator final : public Operator {
-    ArrayBufferWasNeuteredOperator()
-        : Operator(IrOpcode::kArrayBufferWasNeutered, Operator::kEliminatable,
-                   "ArrayBufferWasNeutered", 1, 1, 1, 1, 1, 0) {}
-  };
-  ArrayBufferWasNeuteredOperator kArrayBufferWasNeutered;
 
   struct FindOrderedHashMapEntryOperator final : public Operator {
     FindOrderedHashMapEntryOperator()
@@ -944,6 +954,21 @@ struct SimplifiedOperatorGlobalCache final {
       kCheckedFloat64ToInt32DontCheckForMinusZeroOperator;
 
   template <CheckForMinusZeroMode kMode>
+  struct CheckedFloat64ToInt64Operator final
+      : public Operator1<CheckMinusZeroParameters> {
+    CheckedFloat64ToInt64Operator()
+        : Operator1<CheckMinusZeroParameters>(
+              IrOpcode::kCheckedFloat64ToInt64,
+              Operator::kFoldable | Operator::kNoThrow, "CheckedFloat64ToInt64",
+              1, 1, 1, 1, 1, 0,
+              CheckMinusZeroParameters(kMode, VectorSlotPair())) {}
+  };
+  CheckedFloat64ToInt64Operator<CheckForMinusZeroMode::kCheckForMinusZero>
+      kCheckedFloat64ToInt64CheckForMinusZeroOperator;
+  CheckedFloat64ToInt64Operator<CheckForMinusZeroMode::kDontCheckForMinusZero>
+      kCheckedFloat64ToInt64DontCheckForMinusZeroOperator;
+
+  template <CheckForMinusZeroMode kMode>
   struct CheckedTaggedToInt32Operator final
       : public Operator1<CheckMinusZeroParameters> {
     CheckedTaggedToInt32Operator()
@@ -957,6 +982,21 @@ struct SimplifiedOperatorGlobalCache final {
       kCheckedTaggedToInt32CheckForMinusZeroOperator;
   CheckedTaggedToInt32Operator<CheckForMinusZeroMode::kDontCheckForMinusZero>
       kCheckedTaggedToInt32DontCheckForMinusZeroOperator;
+
+  template <CheckForMinusZeroMode kMode>
+  struct CheckedTaggedToInt64Operator final
+      : public Operator1<CheckMinusZeroParameters> {
+    CheckedTaggedToInt64Operator()
+        : Operator1<CheckMinusZeroParameters>(
+              IrOpcode::kCheckedTaggedToInt64,
+              Operator::kFoldable | Operator::kNoThrow, "CheckedTaggedToInt64",
+              1, 1, 1, 1, 1, 0,
+              CheckMinusZeroParameters(kMode, VectorSlotPair())) {}
+  };
+  CheckedTaggedToInt64Operator<CheckForMinusZeroMode::kCheckForMinusZero>
+      kCheckedTaggedToInt64CheckForMinusZeroOperator;
+  CheckedTaggedToInt64Operator<CheckForMinusZeroMode::kDontCheckForMinusZero>
+      kCheckedTaggedToInt64DontCheckForMinusZeroOperator;
 
   template <CheckTaggedInputMode kMode>
   struct CheckedTaggedToFloat64Operator final
@@ -1007,12 +1047,13 @@ struct SimplifiedOperatorGlobalCache final {
 
   template <CheckFloat64HoleMode kMode>
   struct CheckFloat64HoleNaNOperator final
-      : public Operator1<CheckFloat64HoleMode> {
+      : public Operator1<CheckFloat64HoleParameters> {
     CheckFloat64HoleNaNOperator()
-        : Operator1<CheckFloat64HoleMode>(
+        : Operator1<CheckFloat64HoleParameters>(
               IrOpcode::kCheckFloat64Hole,
               Operator::kFoldable | Operator::kNoThrow, "CheckFloat64Hole", 1,
-              1, 1, 1, 1, 0, kMode) {}
+              1, 1, 1, 1, 0,
+              CheckFloat64HoleParameters(kMode, VectorSlotPair())) {}
   };
   CheckFloat64HoleNaNOperator<CheckFloat64HoleMode::kAllowReturnHole>
       kCheckFloat64HoleAllowReturnHoleOperator;
@@ -1053,6 +1094,39 @@ struct SimplifiedOperatorGlobalCache final {
   };
   LoadFieldByIndexOperator kLoadFieldByIndex;
 
+  struct LoadStackArgumentOperator final : public Operator {
+    LoadStackArgumentOperator()
+        : Operator(                          // --
+              IrOpcode::kLoadStackArgument,  // opcode
+              Operator::kNoDeopt | Operator::kNoThrow |
+                  Operator::kNoWrite,  // flags
+              "LoadStackArgument",     // name
+              2, 1, 1, 1, 1, 0) {}     // counts
+  };
+  LoadStackArgumentOperator kLoadStackArgument;
+
+  struct LoadMessageOperator final : public Operator {
+    LoadMessageOperator()
+        : Operator(                    // --
+              IrOpcode::kLoadMessage,  // opcode
+              Operator::kNoDeopt | Operator::kNoThrow |
+                  Operator::kNoWrite,  // flags
+              "LoadMessage",           // name
+              1, 1, 1, 1, 1, 0) {}     // counts
+  };
+  LoadMessageOperator kLoadMessage;
+
+  struct StoreMessageOperator final : public Operator {
+    StoreMessageOperator()
+        : Operator(                     // --
+              IrOpcode::kStoreMessage,  // opcode
+              Operator::kNoDeopt | Operator::kNoThrow |
+                  Operator::kNoRead,  // flags
+              "StoreMessage",         // name
+              2, 1, 1, 0, 1, 0) {}    // counts
+  };
+  StoreMessageOperator kStoreMessage;
+
 #define SPECULATIVE_NUMBER_BINOP(Name)                                      \
   template <NumberOperationHint kHint>                                      \
   struct Name##Operator final : public Operator1<NumberOperationHint> {     \
@@ -1092,18 +1166,19 @@ struct SimplifiedOperatorGlobalCache final {
       kSpeculativeToNumberNumberOrOddballOperator;
 };
 
-static base::LazyInstance<SimplifiedOperatorGlobalCache>::type
-    kSimplifiedOperatorGlobalCache = LAZY_INSTANCE_INITIALIZER;
+namespace {
+DEFINE_LAZY_LEAKY_OBJECT_GETTER(SimplifiedOperatorGlobalCache,
+                                GetSimplifiedOperatorGlobalCache)
+}
 
 SimplifiedOperatorBuilder::SimplifiedOperatorBuilder(Zone* zone)
-    : cache_(kSimplifiedOperatorGlobalCache.Get()), zone_(zone) {}
+    : cache_(*GetSimplifiedOperatorGlobalCache()), zone_(zone) {}
 
 #define GET_FROM_CACHE(Name, ...) \
   const Operator* SimplifiedOperatorBuilder::Name() { return &cache_.k##Name; }
 PURE_OP_LIST(GET_FROM_CACHE)
 EFFECT_DEPENDENT_OP_LIST(GET_FROM_CACHE)
 CHECKED_OP_LIST(GET_FROM_CACHE)
-GET_FROM_CACHE(ArrayBufferWasNeutered)
 GET_FROM_CACHE(ArgumentsFrame)
 GET_FROM_CACHE(FindOrderedHashMapEntry)
 GET_FROM_CACHE(FindOrderedHashMapEntryForInt32Key)
@@ -1125,6 +1200,23 @@ GET_FROM_CACHE(LoadFieldByIndex)
 CHECKED_WITH_FEEDBACK_OP_LIST(GET_FROM_CACHE_WITH_FEEDBACK)
 #undef GET_FROM_CACHE_WITH_FEEDBACK
 
+#define GET_FROM_CACHE_WITH_FEEDBACK(Name)                                \
+  const Operator* SimplifiedOperatorBuilder::Name(                        \
+      const VectorSlotPair& feedback, CheckBoundsParameters::Mode mode) { \
+    if (!feedback.IsValid()) {                                            \
+      switch (mode) {                                                     \
+        case CheckBoundsParameters::kDeoptOnOutOfBounds:                  \
+          return &cache_.k##Name##Deopting;                               \
+        case CheckBoundsParameters::kAbortOnOutOfBounds:                  \
+          return &cache_.k##Name##Aborting;                               \
+      }                                                                   \
+    }                                                                     \
+    return new (zone())                                                   \
+        SimplifiedOperatorGlobalCache::Name##Operator(feedback, mode);    \
+  }
+CHECKED_BOUNDS_OP_LIST(GET_FROM_CACHE_WITH_FEEDBACK)
+#undef GET_FROM_CACHE_WITH_FEEDBACK
+
 bool IsCheckedWithFeedback(const Operator* op) {
 #define CASE(Name, ...) case IrOpcode::k##Name:
   switch (op->opcode()) {
@@ -1144,15 +1236,20 @@ const Operator* SimplifiedOperatorBuilder::RuntimeAbort(AbortReason reason) {
       static_cast<int>(reason));                // parameter
 }
 
-const Operator* SimplifiedOperatorBuilder::CheckIf(DeoptimizeReason reason) {
-  switch (reason) {
+const Operator* SimplifiedOperatorBuilder::CheckIf(
+    DeoptimizeReason reason, const VectorSlotPair& feedback) {
+  if (!feedback.IsValid()) {
+    switch (reason) {
 #define CHECK_IF(Name, message)   \
   case DeoptimizeReason::k##Name: \
     return &cache_.kCheckIf##Name;
     DEOPTIMIZE_REASON_LIST(CHECK_IF)
 #undef CHECK_IF
+    }
   }
-  UNREACHABLE();
+  return new (zone()) Operator1<CheckIfParameters>(
+      IrOpcode::kCheckIf, Operator::kFoldable | Operator::kNoThrow, "CheckIf",
+      1, 1, 1, 0, 1, 0, CheckIfParameters(reason, feedback));
 }
 
 const Operator* SimplifiedOperatorBuilder::ChangeFloat64ToTagged(
@@ -1193,6 +1290,22 @@ const Operator* SimplifiedOperatorBuilder::CheckedFloat64ToInt32(
       1, 1, 1, 0, CheckMinusZeroParameters(mode, feedback));
 }
 
+const Operator* SimplifiedOperatorBuilder::CheckedFloat64ToInt64(
+    CheckForMinusZeroMode mode, const VectorSlotPair& feedback) {
+  if (!feedback.IsValid()) {
+    switch (mode) {
+      case CheckForMinusZeroMode::kCheckForMinusZero:
+        return &cache_.kCheckedFloat64ToInt64CheckForMinusZeroOperator;
+      case CheckForMinusZeroMode::kDontCheckForMinusZero:
+        return &cache_.kCheckedFloat64ToInt64DontCheckForMinusZeroOperator;
+    }
+  }
+  return new (zone()) Operator1<CheckMinusZeroParameters>(
+      IrOpcode::kCheckedFloat64ToInt64,
+      Operator::kFoldable | Operator::kNoThrow, "CheckedFloat64ToInt64", 1, 1,
+      1, 1, 1, 0, CheckMinusZeroParameters(mode, feedback));
+}
+
 const Operator* SimplifiedOperatorBuilder::CheckedTaggedToInt32(
     CheckForMinusZeroMode mode, const VectorSlotPair& feedback) {
   if (!feedback.IsValid()) {
@@ -1206,6 +1319,22 @@ const Operator* SimplifiedOperatorBuilder::CheckedTaggedToInt32(
   return new (zone()) Operator1<CheckMinusZeroParameters>(
       IrOpcode::kCheckedTaggedToInt32, Operator::kFoldable | Operator::kNoThrow,
       "CheckedTaggedToInt32", 1, 1, 1, 1, 1, 0,
+      CheckMinusZeroParameters(mode, feedback));
+}
+
+const Operator* SimplifiedOperatorBuilder::CheckedTaggedToInt64(
+    CheckForMinusZeroMode mode, const VectorSlotPair& feedback) {
+  if (!feedback.IsValid()) {
+    switch (mode) {
+      case CheckForMinusZeroMode::kCheckForMinusZero:
+        return &cache_.kCheckedTaggedToInt64CheckForMinusZeroOperator;
+      case CheckForMinusZeroMode::kDontCheckForMinusZero:
+        return &cache_.kCheckedTaggedToInt64DontCheckForMinusZeroOperator;
+    }
+  }
+  return new (zone()) Operator1<CheckMinusZeroParameters>(
+      IrOpcode::kCheckedTaggedToInt64, Operator::kFoldable | Operator::kNoThrow,
+      "CheckedTaggedToInt64", 1, 1, 1, 1, 1, 0,
       CheckMinusZeroParameters(mode, feedback));
 }
 
@@ -1254,21 +1383,23 @@ const Operator* SimplifiedOperatorBuilder::CheckMaps(
 }
 
 const Operator* SimplifiedOperatorBuilder::MapGuard(ZoneHandleSet<Map> maps) {
-  return new (zone()) Operator1<MapsParameterInfo>(  // --
-      IrOpcode::kMapGuard, Operator::kEliminatable,  // opcode
-      "MapGuard",                                    // name
-      1, 1, 1, 0, 1, 0,                              // counts
-      MapsParameterInfo(maps));                      // parameter
+  DCHECK_LT(0, maps.size());
+  return new (zone()) Operator1<ZoneHandleSet<Map>>(  // --
+      IrOpcode::kMapGuard, Operator::kEliminatable,   // opcode
+      "MapGuard",                                     // name
+      1, 1, 1, 0, 1, 0,                               // counts
+      maps);                                          // parameter
 }
 
 const Operator* SimplifiedOperatorBuilder::CompareMaps(
     ZoneHandleSet<Map> maps) {
-  return new (zone()) Operator1<MapsParameterInfo>(  // --
-      IrOpcode::kCompareMaps,                        // opcode
-      Operator::kEliminatable,                       // flags
-      "CompareMaps",                                 // name
-      1, 1, 1, 1, 1, 0,                              // counts
-      MapsParameterInfo(maps));                      // parameter
+  DCHECK_LT(0, maps.size());
+  return new (zone()) Operator1<ZoneHandleSet<Map>>(  // --
+      IrOpcode::kCompareMaps,                         // opcode
+      Operator::kEliminatable,                        // flags
+      "CompareMaps",                                  // name
+      1, 1, 1, 1, 1, 0,                               // counts
+      maps);                                          // parameter
 }
 
 const Operator* SimplifiedOperatorBuilder::ConvertReceiver(
@@ -1286,14 +1417,20 @@ const Operator* SimplifiedOperatorBuilder::ConvertReceiver(
 }
 
 const Operator* SimplifiedOperatorBuilder::CheckFloat64Hole(
-    CheckFloat64HoleMode mode) {
-  switch (mode) {
-    case CheckFloat64HoleMode::kAllowReturnHole:
-      return &cache_.kCheckFloat64HoleAllowReturnHoleOperator;
-    case CheckFloat64HoleMode::kNeverReturnHole:
-      return &cache_.kCheckFloat64HoleNeverReturnHoleOperator;
+    CheckFloat64HoleMode mode, VectorSlotPair const& feedback) {
+  if (!feedback.IsValid()) {
+    switch (mode) {
+      case CheckFloat64HoleMode::kAllowReturnHole:
+        return &cache_.kCheckFloat64HoleAllowReturnHoleOperator;
+      case CheckFloat64HoleMode::kNeverReturnHole:
+        return &cache_.kCheckFloat64HoleNeverReturnHoleOperator;
+    }
+    UNREACHABLE();
   }
-  UNREACHABLE();
+  return new (zone()) Operator1<CheckFloat64HoleParameters>(
+      IrOpcode::kCheckFloat64Hole, Operator::kFoldable | Operator::kNoThrow,
+      "CheckFloat64Hole", 1, 1, 1, 1, 1, 0,
+      CheckFloat64HoleParameters(mode, feedback));
 }
 
 const Operator* SimplifiedOperatorBuilder::SpeculativeToNumber(
@@ -1406,10 +1543,58 @@ std::ostream& operator<<(std::ostream& os, CheckParameters const& p) {
 }
 
 CheckParameters const& CheckParametersOf(Operator const* op) {
+  if (op->opcode() == IrOpcode::kCheckedUint32Bounds) {
+    return OpParameter<CheckBoundsParameters>(op).check_parameters();
+  }
 #define MAKE_OR(name, arg2, arg3) op->opcode() == IrOpcode::k##name ||
   CHECK((CHECKED_WITH_FEEDBACK_OP_LIST(MAKE_OR) false));
 #undef MAKE_OR
   return OpParameter<CheckParameters>(op);
+}
+
+bool operator==(CheckBoundsParameters const& lhs,
+                CheckBoundsParameters const& rhs) {
+  return lhs.check_parameters() == rhs.check_parameters() &&
+         lhs.mode() == rhs.mode();
+}
+
+size_t hash_value(CheckBoundsParameters const& p) {
+  return base::hash_combine(hash_value(p.check_parameters()), p.mode());
+}
+
+std::ostream& operator<<(std::ostream& os, CheckBoundsParameters const& p) {
+  os << p.check_parameters() << ",";
+  switch (p.mode()) {
+    case CheckBoundsParameters::kDeoptOnOutOfBounds:
+      os << "deopt";
+      break;
+    case CheckBoundsParameters::kAbortOnOutOfBounds:
+      os << "abort";
+      break;
+  }
+  return os;
+}
+
+CheckBoundsParameters const& CheckBoundsParametersOf(Operator const* op) {
+  CHECK_EQ(op->opcode(), IrOpcode::kCheckedUint32Bounds);
+  return OpParameter<CheckBoundsParameters>(op);
+}
+
+bool operator==(CheckIfParameters const& lhs, CheckIfParameters const& rhs) {
+  return lhs.reason() == rhs.reason() && lhs.feedback() == rhs.feedback();
+}
+
+size_t hash_value(CheckIfParameters const& p) {
+  return base::hash_combine(p.reason(), p.feedback());
+}
+
+std::ostream& operator<<(std::ostream& os, CheckIfParameters const& p) {
+  return os << p.reason() << p.feedback();
+}
+
+CheckIfParameters const& CheckIfParametersOf(Operator const* op) {
+  CHECK(op->opcode() == IrOpcode::kCheckIf);
+  return OpParameter<CheckIfParameters>(op);
 }
 
 const Operator* SimplifiedOperatorBuilder::NewDoubleElements(
@@ -1505,13 +1690,15 @@ const Operator* SimplifiedOperatorBuilder::StringFromSingleCodePoint(
 SPECULATIVE_NUMBER_BINOP_LIST(SPECULATIVE_NUMBER_BINOP)
 #undef SPECULATIVE_NUMBER_BINOP
 
-#define ACCESS_OP_LIST(V)                                             \
-  V(LoadField, FieldAccess, Operator::kNoWrite, 1, 1, 1)              \
-  V(StoreField, FieldAccess, Operator::kNoRead, 2, 1, 0)              \
-  V(LoadElement, ElementAccess, Operator::kNoWrite, 2, 1, 1)          \
-  V(StoreElement, ElementAccess, Operator::kNoRead, 3, 1, 0)          \
-  V(LoadTypedElement, ExternalArrayType, Operator::kNoWrite, 4, 1, 1) \
-  V(StoreTypedElement, ExternalArrayType, Operator::kNoRead, 5, 1, 0)
+#define ACCESS_OP_LIST(V)                                                \
+  V(LoadField, FieldAccess, Operator::kNoWrite, 1, 1, 1)                 \
+  V(StoreField, FieldAccess, Operator::kNoRead, 2, 1, 0)                 \
+  V(LoadElement, ElementAccess, Operator::kNoWrite, 2, 1, 1)             \
+  V(StoreElement, ElementAccess, Operator::kNoRead, 3, 1, 0)             \
+  V(LoadTypedElement, ExternalArrayType, Operator::kNoWrite, 4, 1, 1)    \
+  V(StoreTypedElement, ExternalArrayType, Operator::kNoRead, 5, 1, 0)    \
+  V(LoadDataViewElement, ExternalArrayType, Operator::kNoWrite, 5, 1, 1) \
+  V(StoreDataViewElement, ExternalArrayType, Operator::kNoRead, 6, 1, 0)
 
 #define ACCESS(Name, Type, properties, value_input_count, control_input_count, \
                output_count)                                                   \
@@ -1524,6 +1711,18 @@ SPECULATIVE_NUMBER_BINOP_LIST(SPECULATIVE_NUMBER_BINOP)
   }
 ACCESS_OP_LIST(ACCESS)
 #undef ACCESS
+
+const Operator* SimplifiedOperatorBuilder::LoadMessage() {
+  return &cache_.kLoadMessage;
+}
+
+const Operator* SimplifiedOperatorBuilder::StoreMessage() {
+  return &cache_.kStoreMessage;
+}
+
+const Operator* SimplifiedOperatorBuilder::LoadStackArgument() {
+  return &cache_.kLoadStackArgument;
+}
 
 const Operator* SimplifiedOperatorBuilder::TransitionAndStoreElement(
     Handle<Map> double_map, Handle<Map> fast_map) {
@@ -1562,6 +1761,7 @@ const Operator* SimplifiedOperatorBuilder::TransitionAndStoreNonNumberElement(
 #undef EFFECT_DEPENDENT_OP_LIST
 #undef SPECULATIVE_NUMBER_BINOP_LIST
 #undef CHECKED_WITH_FEEDBACK_OP_LIST
+#undef CHECKED_BOUNDS_OP_LIST
 #undef CHECKED_OP_LIST
 #undef ACCESS_OP_LIST
 

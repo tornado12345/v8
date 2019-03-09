@@ -12,6 +12,7 @@
 #include "src/globals.h"
 #include "src/interface-descriptors.h"
 #include "src/machine-type.h"
+#include "src/register-arch.h"
 #include "src/reglist.h"
 #include "src/runtime/runtime.h"
 #include "src/signature.h"
@@ -66,14 +67,14 @@ class LinkageLocation {
   static LinkageLocation ForSavedCallerReturnAddress() {
     return ForCalleeFrameSlot((StandardFrameConstants::kCallerPCOffset -
                                StandardFrameConstants::kCallerPCOffset) /
-                                  kPointerSize,
+                                  kSystemPointerSize,
                               MachineType::Pointer());
   }
 
   static LinkageLocation ForSavedCallerFramePtr() {
     return ForCalleeFrameSlot((StandardFrameConstants::kCallerPCOffset -
                                StandardFrameConstants::kCallerFPOffset) /
-                                  kPointerSize,
+                                  kSystemPointerSize,
                               MachineType::Pointer());
   }
 
@@ -81,14 +82,14 @@ class LinkageLocation {
     DCHECK(V8_EMBEDDED_CONSTANT_POOL);
     return ForCalleeFrameSlot((StandardFrameConstants::kCallerPCOffset -
                                StandardFrameConstants::kConstantPoolOffset) /
-                                  kPointerSize,
+                                  kSystemPointerSize,
                               MachineType::AnyTagged());
   }
 
   static LinkageLocation ForSavedCallerFunction() {
     return ForCalleeFrameSlot((StandardFrameConstants::kCallerPCOffset -
                                StandardFrameConstants::kFunctionOffset) /
-                                  kPointerSize,
+                                  kSystemPointerSize,
                               MachineType::AnyTagged());
   }
 
@@ -110,7 +111,7 @@ class LinkageLocation {
 
   int GetSizeInPointers() const {
     // Round up
-    return (GetSize() + kPointerSize - 1) / kPointerSize;
+    return (GetSize() + kSystemPointerSize - 1) / kSystemPointerSize;
   }
 
   int32_t GetLocation() const {
@@ -152,7 +153,9 @@ class LinkageLocation {
   LinkageLocation(LocationType type, int32_t location,
                   MachineType machine_type) {
     bit_field_ = TypeField::encode(type) |
-                 ((location << LocationField::kShift) & LocationField::kMask);
+                 // {location} can be -1 (ANY_REGISTER).
+                 ((static_cast<uint32_t>(location) << LocationField::kShift) &
+                  LocationField::kMask);
     machine_type_ = machine_type;
   }
 
@@ -169,10 +172,12 @@ class V8_EXPORT_PRIVATE CallDescriptor final
  public:
   // Describes the kind of this call, which determines the target.
   enum Kind {
-    kCallCodeObject,   // target is a Code object
-    kCallJSFunction,   // target is a JSFunction object
-    kCallAddress,      // target is a machine pointer
-    kCallWasmFunction  // target is a wasm function
+    kCallCodeObject,         // target is a Code object
+    kCallJSFunction,         // target is a JSFunction object
+    kCallAddress,            // target is a machine pointer
+    kCallWasmFunction,       // target is a wasm function
+    kCallWasmImportWrapper,  // target is a wasm import wrapper
+    kCallBuiltinPointer,     // target is a builtin pointer
   };
 
   enum Flag {
@@ -190,7 +195,8 @@ class V8_EXPORT_PRIVATE CallDescriptor final
     kRetpoline = 1u << 6,
     // Use the kJavaScriptCallCodeStartRegister (fixed) register for the
     // indirect target address when calling.
-    kFixedTargetRegister = 1u << 7
+    kFixedTargetRegister = 1u << 7,
+    kAllowCallThroughSlot = 1u << 8
   };
   typedef base::Flags<Flag> Flags;
 
@@ -226,6 +232,9 @@ class V8_EXPORT_PRIVATE CallDescriptor final
 
   // Returns {true} if this descriptor is a call to a WebAssembly function.
   bool IsWasmFunctionCall() const { return kind_ == kCallWasmFunction; }
+
+  // Returns {true} if this descriptor is a call to a WebAssembly function.
+  bool IsWasmImportWrapper() const { return kind_ == kCallWasmImportWrapper; }
 
   bool RequiresFrameAsIncoming() const {
     return IsCFunctionCall() || IsJSFunctionCall() || IsWasmFunctionCall();
@@ -308,6 +317,8 @@ class V8_EXPORT_PRIVATE CallDescriptor final
 
   int GetStackParameterDelta(const CallDescriptor* tail_caller) const;
 
+  int GetTaggedParameterSlots() const;
+
   bool CanTailCall(const Node* call) const;
 
   int CalculateFixedFrameSize() const;
@@ -362,12 +373,10 @@ V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream& os,
 //                        #0          #1     #2     [...]             #n
 // Call[CodeStub]         code,       arg 1, arg 2, [...],            context
 // Call[JSFunction]       function,   rcvr,  arg 1, [...], new, #arg, context
-// Call[Runtime]          CEntryStub, arg 1, arg 2, [...], fun, #arg, context
+// Call[Runtime]          CEntry,     arg 1, arg 2, [...], fun, #arg, context
 // Call[BytecodeDispatch] address,    arg 1, arg 2, [...]
 class V8_EXPORT_PRIVATE Linkage : public NON_EXPORTED_BASE(ZoneObject) {
  public:
-  enum ContextSpecification { kNoContext, kPassContext };
-
   explicit Linkage(CallDescriptor* incoming) : incoming_(incoming) {}
 
   static CallDescriptor* ComputeIncoming(Zone* zone,
@@ -390,16 +399,13 @@ class V8_EXPORT_PRIVATE Linkage : public NON_EXPORTED_BASE(ZoneObject) {
       CallDescriptor::Flags flags);
 
   static CallDescriptor* GetStubCallDescriptor(
-      Isolate* isolate, Zone* zone, const CallInterfaceDescriptor& descriptor,
+      Zone* zone, const CallInterfaceDescriptor& descriptor,
       int stack_parameter_count, CallDescriptor::Flags flags,
       Operator::Properties properties = Operator::kNoProperties,
-      MachineType return_type = MachineType::AnyTagged(),
-      size_t return_count = 1,
-      ContextSpecification context_spec = kPassContext);
+      StubCallMode stub_mode = StubCallMode::kCallCodeObject);
 
-  static CallDescriptor* GetAllocateCallDescriptor(Zone* zone);
   static CallDescriptor* GetBytecodeDispatchCallDescriptor(
-      Isolate* isolate, Zone* zone, const CallInterfaceDescriptor& descriptor,
+      Zone* zone, const CallInterfaceDescriptor& descriptor,
       int stack_parameter_count);
 
   // Creates a call descriptor for simplified C calls that is appropriate

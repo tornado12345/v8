@@ -6,7 +6,7 @@
 
 #include "include/libplatform/libplatform.h"
 #include "include/v8.h"
-#include "src/api.h"
+#include "src/api-inl.h"
 #include "src/base/platform/time.h"
 #include "src/flags.h"
 #include "src/isolate.h"
@@ -15,91 +15,33 @@
 
 namespace v8 {
 
-// static
-v8::ArrayBuffer::Allocator* TestWithIsolate::array_buffer_allocator_ = nullptr;
-
-// static
-Isolate* TestWithIsolate::isolate_ = nullptr;
-
-TestWithIsolate::TestWithIsolate()
-    : isolate_scope_(isolate()), handle_scope_(isolate()) {}
-
-
-TestWithIsolate::~TestWithIsolate() {}
-
-
-// static
-void TestWithIsolate::SetUpTestCase() {
-  Test::SetUpTestCase();
-  EXPECT_EQ(NULL, isolate_);
-  // Make BigInt64Array / BigUint64Array available for testing.
-  i::FLAG_harmony_bigint = true;
+IsolateWrapper::IsolateWrapper(bool enforce_pointer_compression)
+    : array_buffer_allocator_(
+          v8::ArrayBuffer::Allocator::NewDefaultAllocator()) {
   v8::Isolate::CreateParams create_params;
-  array_buffer_allocator_ = v8::ArrayBuffer::Allocator::NewDefaultAllocator();
   create_params.array_buffer_allocator = array_buffer_allocator_;
-  isolate_ = v8::Isolate::New(create_params);
-  EXPECT_TRUE(isolate_ != NULL);
+  if (enforce_pointer_compression) {
+    isolate_ = reinterpret_cast<v8::Isolate*>(
+        i::Isolate::New(i::IsolateAllocationMode::kInV8Heap));
+    v8::Isolate::Initialize(isolate_, create_params);
+  } else {
+    isolate_ = v8::Isolate::New(create_params);
+  }
+  CHECK_NOT_NULL(isolate_);
 }
 
-
-// static
-void TestWithIsolate::TearDownTestCase() {
-  ASSERT_TRUE(isolate_ != NULL);
+IsolateWrapper::~IsolateWrapper() {
   v8::Platform* platform = internal::V8::GetCurrentPlatform();
-  ASSERT_TRUE(platform != NULL);
+  CHECK_NOT_NULL(platform);
   while (platform::PumpMessageLoop(platform, isolate_)) continue;
   isolate_->Dispose();
-  isolate_ = NULL;
   delete array_buffer_allocator_;
-  Test::TearDownTestCase();
 }
 
-Local<Value> TestWithIsolate::RunJS(const char* source) {
-  Local<Script> script =
-      v8::Script::Compile(
-          isolate()->GetCurrentContext(),
-          v8::String::NewFromUtf8(isolate(), source, v8::NewStringType::kNormal)
-              .ToLocalChecked())
-          .ToLocalChecked();
-  return script->Run(isolate()->GetCurrentContext()).ToLocalChecked();
-}
-
-TestWithContext::TestWithContext()
-    : context_(Context::New(isolate())), context_scope_(context_) {}
-
-
-TestWithContext::~TestWithContext() {}
-
-void TestWithContext::SetGlobalProperty(const char* name,
-                                        v8::Local<v8::Value> value) {
-  v8::Local<v8::String> property_name =
-      v8::String::NewFromUtf8(v8_isolate(), name, v8::NewStringType::kNormal)
-          .ToLocalChecked();
-  CHECK(v8_context()
-            ->Global()
-            ->Set(v8_context(), property_name, value)
-            .FromJust());
-}
+// static
+v8::IsolateWrapper* SharedIsolateHolder::isolate_wrapper_ = nullptr;
 
 namespace internal {
-
-TestWithIsolate::~TestWithIsolate() {}
-
-TestWithIsolateAndZone::~TestWithIsolateAndZone() {}
-
-Factory* TestWithIsolate::factory() const { return isolate()->factory(); }
-
-base::RandomNumberGenerator* TestWithIsolate::random_number_generator() const {
-  return isolate()->random_number_generator();
-}
-
-TestWithZone::~TestWithZone() {}
-
-TestWithNativeContext::~TestWithNativeContext() {}
-
-Handle<Context> TestWithNativeContext::native_context() const {
-  return isolate()->native_context();
-}
 
 SaveFlags::SaveFlags() { non_default_flags_ = FlagList::argv(); }
 

@@ -36,6 +36,7 @@
 #include "src/frames-inl.h"
 #include "src/macro-assembler.h"
 #include "src/objects-inl.h"
+#include "src/ostreams.h"
 #include "test/cctest/cctest.h"
 
 namespace v8 {
@@ -43,17 +44,13 @@ namespace internal {
 
 #define __ assm.
 
-
-static void DummyStaticFunction(Object* result) {
-}
-
 TEST(DisasmX64) {
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
   v8::internal::byte buffer[8192];
-  Assembler assm(isolate, buffer, sizeof buffer);
-  DummyStaticFunction(nullptr);  // just bloody use it (DELETE; debugging)
+  Assembler assm(AssemblerOptions{},
+                 ExternalAssemblerBuffer(buffer, sizeof buffer));
 
   // Short immediate instructions
   __ addq(rax, Immediate(12345678));
@@ -89,6 +86,8 @@ TEST(DisasmX64) {
   __ addq(rdi, Operand(rbp, rcx, times_4, -3999));
   __ addq(Operand(rbp, rcx, times_4, 12), Immediate(12));
 
+  __ bswapl(rax);
+  __ bswapq(rdi);
   __ bsrl(rax, r15);
   __ bsrl(r9, Operand(rcx, times_8, 91919));
 
@@ -140,8 +139,11 @@ TEST(DisasmX64) {
   __ shll_cl(Operand(rdi, rax, times_4, 100));
   __ shll(rdx, Immediate(1));
   __ shll(rdx, Immediate(6));
-  __ bts(Operand(rdx, 0), rcx);
-  __ bts(Operand(rbx, rcx, times_4, 0), rcx);
+  __ btq(Operand(rdx, 0), rcx);
+  __ btsq(Operand(rdx, 0), rcx);
+  __ btsq(Operand(rbx, rcx, times_4, 0), rcx);
+  __ btsq(rcx, Immediate(13));
+  __ btrq(rcx, Immediate(13));
   __ nop();
   __ pushq(Immediate(12));
   __ pushq(Immediate(23456));
@@ -203,8 +205,7 @@ TEST(DisasmX64) {
   __ incq(Operand(rbx, rcx, times_4, 10000));
   __ pushq(Operand(rbx, rcx, times_4, 10000));
   __ popq(Operand(rbx, rcx, times_4, 10000));
-  // TODO(mstarzinger): The following is protected.
-  // __ jmp(Operand(rbx, rcx, times_4, 10000));
+  __ jmp(Operand(rbx, rcx, times_4, 10000));
 
   __ leaq(rdx, Operand(rbx, rcx, times_4, 10000));
   __ orq(rdx, Immediate(12345));
@@ -265,7 +266,6 @@ TEST(DisasmX64) {
 
   __ xorq(rdx, Immediate(12345));
   __ xorq(rdx, Operand(rbx, rcx, times_8, 10000));
-  __ bts(Operand(rbx, rcx, times_8, 10000), rdx);
   __ pshufw(xmm5, xmm1, 3);
   __ hlt();
   __ int3();
@@ -290,8 +290,7 @@ TEST(DisasmX64) {
   __ nop();
 
   __ jmp(&L1);
-  // TODO(mstarzinger): The following is protected.
-  // __ jmp(Operand(rbx, rcx, times_4, 10000));
+  __ jmp(Operand(rbx, rcx, times_4, 10000));
   __ jmp(ic, RelocInfo::CODE_TARGET);
   __ nop();
 
@@ -384,6 +383,8 @@ TEST(DisasmX64) {
     __ cvttss2si(rdx, xmm1);
     __ cvtsd2ss(xmm0, xmm1);
     __ cvtsd2ss(xmm0, Operand(rbx, rcx, times_4, 10000));
+    __ cvttps2dq(xmm0, xmm1);
+    __ cvttps2dq(xmm0, Operand(rbx, rcx, times_4, 10000));
     __ movaps(xmm0, xmm1);
     __ movdqa(xmm0, Operand(rsp, 12));
     __ movdqa(Operand(rsp, 12), xmm0);
@@ -524,6 +525,8 @@ TEST(DisasmX64) {
   {
     if (CpuFeatures::IsSupported(SSSE3)) {
       CpuFeatureScope scope(&assm, SSSE3);
+      __ palignr(xmm5, xmm1, 5);
+      __ palignr(xmm5, Operand(rdx, 4), 5);
       SSSE3_INSTRUCTION_LIST(EMIT_SSE34_INSTR)
     }
   }
@@ -539,6 +542,8 @@ TEST(DisasmX64) {
       __ pextrd(r12, xmm0, 1);
       __ pinsrd(xmm9, r9, 0);
       __ pinsrd(xmm5, Operand(rax, 4), 1);
+      __ pblendw(xmm5, xmm1, 1);
+      __ pblendw(xmm9, Operand(rax, 4), 1);
 
       __ cmpps(xmm5, xmm1, 1);
       __ cmpps(xmm5, Operand(rbx, rcx, times_4, 10000), 1);
@@ -955,6 +960,7 @@ TEST(DisasmX64) {
     __ Nop(i);
   }
 
+  __ pause();
   __ ret(0);
 
   CodeDesc desc;
@@ -963,7 +969,7 @@ TEST(DisasmX64) {
       isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
   USE(code);
 #ifdef OBJECT_PRINT
-  OFStream os(stdout);
+  StdoutStream os;
   code->Print(os);
   Address begin = code->raw_instruction_start();
   Address end = code->raw_instruction_end();

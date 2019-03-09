@@ -7,8 +7,10 @@
 #include "src/counters.h"
 #include "src/globals.h"
 #include "src/heap/factory.h"
+#include "src/log.h"
 #include "src/objects-inl.h"
 #include "src/objects/compilation-cache-inl.h"
+#include "src/objects/slots.h"
 #include "src/visitors.h"
 
 namespace v8 {
@@ -34,8 +36,6 @@ CompilationCache::CompilationCache(Isolate* isolate)
   }
 }
 
-CompilationCache::~CompilationCache() {}
-
 Handle<CompilationCacheTable> CompilationSubCache::GetTable(int generation) {
   DCHECK(generation < generations_);
   Handle<CompilationCacheTable> result;
@@ -43,7 +43,7 @@ Handle<CompilationCacheTable> CompilationSubCache::GetTable(int generation) {
     result = CompilationCacheTable::New(isolate(), kInitialCacheSize);
     tables_[generation] = *result;
   } else {
-    CompilationCacheTable* table =
+    CompilationCacheTable table =
         CompilationCacheTable::cast(tables_[generation]);
     result = Handle<CompilationCacheTable>(table, isolate());
   }
@@ -65,16 +65,19 @@ void CompilationSubCache::Age() {
   }
 
   // Set the first generation as unborn.
-  tables_[0] = isolate()->heap()->undefined_value();
+  tables_[0] = ReadOnlyRoots(isolate()).undefined_value();
 }
 
 void CompilationSubCache::Iterate(RootVisitor* v) {
-  v->VisitRootPointers(Root::kCompilationCache, nullptr, &tables_[0],
-                       &tables_[generations_]);
+  v->VisitRootPointers(Root::kCompilationCache, nullptr,
+                       FullObjectSlot(&tables_[0]),
+                       FullObjectSlot(&tables_[generations_]));
 }
 
 void CompilationSubCache::Clear() {
-  MemsetPointer(tables_, isolate()->heap()->undefined_value(), generations_);
+  MemsetPointer(reinterpret_cast<Address*>(tables_),
+                ReadOnlyRoots(isolate()).undefined_value()->ptr(),
+                generations_);
 }
 
 void CompilationSubCache::Remove(Handle<SharedFunctionInfo> function_info) {
@@ -115,8 +118,9 @@ bool CompilationCacheScript::HasOrigin(Handle<SharedFunctionInfo> function_info,
   if (resource_options.Flags() != script->origin_options().Flags())
     return false;
   // Compare the two name strings for equality.
-  return String::Equals(Handle<String>::cast(name),
-                        Handle<String>(String::cast(script->name())));
+  return String::Equals(
+      isolate(), Handle<String>::cast(name),
+      Handle<String>(String::cast(script->name()), isolate()));
 }
 
 // TODO(245): Need to allow identical code from different contexts to
@@ -135,8 +139,8 @@ MaybeHandle<SharedFunctionInfo> CompilationCacheScript::Lookup(
     const int generation = 0;
     DCHECK_EQ(generations(), 1);
     Handle<CompilationCacheTable> table = GetTable(generation);
-    MaybeHandle<SharedFunctionInfo> probe =
-        table->LookupScript(source, native_context, language_mode);
+    MaybeHandle<SharedFunctionInfo> probe = CompilationCacheTable::LookupScript(
+        table, source, native_context, language_mode);
     Handle<SharedFunctionInfo> function_info;
     if (probe.ToHandle(&function_info)) {
       // Break when we've found a suitable shared function info that
@@ -160,6 +164,7 @@ MaybeHandle<SharedFunctionInfo> CompilationCacheScript::Lookup(
                      resource_options));
 #endif
     isolate()->counters()->compilation_cache_hits()->Increment();
+    LOG(isolate(), CompilationCacheEvent("hit", "script", *function_info));
   } else {
     isolate()->counters()->compilation_cache_misses()->Increment();
   }
@@ -189,8 +194,8 @@ InfoCellPair CompilationCacheEval::Lookup(Handle<String> source,
   const int generation = 0;
   DCHECK_EQ(generations(), 1);
   Handle<CompilationCacheTable> table = GetTable(generation);
-  result = table->LookupEval(source, outer_info, native_context, language_mode,
-                             position);
+  result = CompilationCacheTable::LookupEval(
+      table, source, outer_info, native_context, language_mode, position);
   if (result.has_shared()) {
     isolate()->counters()->compilation_cache_hits()->Increment();
   } else {
@@ -245,7 +250,8 @@ void CompilationCacheRegExp::Put(Handle<String> source,
                                  Handle<FixedArray> data) {
   HandleScope scope(isolate());
   Handle<CompilationCacheTable> table = GetFirstTable();
-  SetFirstTable(CompilationCacheTable::PutRegExp(table, source, flags, data));
+  SetFirstTable(
+      CompilationCacheTable::PutRegExp(isolate(), table, source, flags, data));
 }
 
 void CompilationCache::Remove(Handle<SharedFunctionInfo> function_info) {
@@ -274,14 +280,23 @@ InfoCellPair CompilationCache::LookupEval(Handle<String> source,
   InfoCellPair result;
   if (!IsEnabled()) return result;
 
+  const char* cache_type;
+
   if (context->IsNativeContext()) {
     result = eval_global_.Lookup(source, outer_info, context, language_mode,
                                  position);
+    cache_type = "eval-global";
+
   } else {
     DCHECK_NE(position, kNoSourcePosition);
     Handle<Context> native_context(context->native_context(), isolate());
     result = eval_contextual_.Lookup(source, outer_info, native_context,
                                      language_mode, position);
+    cache_type = "eval-contextual";
+  }
+
+  if (result.has_shared()) {
+    LOG(isolate(), CompilationCacheEvent("hit", cache_type, result.shared()));
   }
 
   return result;
@@ -299,6 +314,7 @@ void CompilationCache::PutScript(Handle<String> source,
                                  LanguageMode language_mode,
                                  Handle<SharedFunctionInfo> function_info) {
   if (!IsEnabled()) return;
+  LOG(isolate(), CompilationCacheEvent("put", "script", *function_info));
 
   script_.Put(source, native_context, language_mode, function_info);
 }
@@ -311,24 +327,26 @@ void CompilationCache::PutEval(Handle<String> source,
                                int position) {
   if (!IsEnabled()) return;
 
+  const char* cache_type;
   HandleScope scope(isolate());
   if (context->IsNativeContext()) {
     eval_global_.Put(source, outer_info, function_info, context, feedback_cell,
                      position);
+    cache_type = "eval-global";
   } else {
     DCHECK_NE(position, kNoSourcePosition);
     Handle<Context> native_context(context->native_context(), isolate());
     eval_contextual_.Put(source, outer_info, function_info, native_context,
                          feedback_cell, position);
+    cache_type = "eval-contextual";
   }
+  LOG(isolate(), CompilationCacheEvent("put", cache_type, *function_info));
 }
 
 void CompilationCache::PutRegExp(Handle<String> source,
                                  JSRegExp::Flags flags,
                                  Handle<FixedArray> data) {
-  if (!IsEnabled()) {
-    return;
-  }
+  if (!IsEnabled()) return;
 
   reg_exp_.Put(source, flags, data);
 }

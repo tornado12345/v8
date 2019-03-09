@@ -5,7 +5,7 @@
 #ifndef V8_OBJECTS_JS_PROMISE_H_
 #define V8_OBJECTS_JS_PROMISE_H_
 
-#include "src/objects.h"
+#include "src/objects/js-objects.h"
 #include "src/objects/promise.h"
 
 // Has to be the last include (doesn't have include guards):
@@ -31,10 +31,10 @@ class JSPromise : public JSObject {
   DECL_ACCESSORS(reactions_or_result, Object)
 
   // [result]: Checks that the promise is settled and returns the result.
-  inline Object* result() const;
+  inline Object result() const;
 
   // [reactions]: Checks that the promise is pending and returns the reactions.
-  inline Object* reactions() const;
+  inline Object reactions() const;
 
   DECL_INT_ACCESSORS(flags)
 
@@ -44,6 +44,9 @@ class JSPromise : public JSObject {
   // [handled_hint]: Whether this promise will be handled by a catch
   // block in an async function.
   DECL_BOOLEAN_ACCESSORS(handled_hint)
+
+  int async_task_id() const;
+  void set_async_task_id(int id);
 
   static const char* Status(Promise::PromiseState status);
   Promise::PromiseState status() const;
@@ -59,30 +62,24 @@ class JSPromise : public JSObject {
   V8_WARN_UNUSED_RESULT static MaybeHandle<Object> Resolve(
       Handle<JSPromise> promise, Handle<Object> resolution);
 
-  // This is a helper that extracts the JSPromise from the input
-  // {object}, which is used as a payload for PromiseReaction and
-  // PromiseReactionJobTask.
-  V8_WARN_UNUSED_RESULT static MaybeHandle<JSPromise> From(
-      Handle<HeapObject> object);
-
   DECL_CAST(JSPromise)
 
   // Dispatched behavior.
   DECL_PRINTER(JSPromise)
   DECL_VERIFIER(JSPromise)
 
-  // Layout description.
-  static const int kReactionsOrResultOffset = JSObject::kHeaderSize;
-  static const int kFlagsOffset = kReactionsOrResultOffset + kPointerSize;
-  static const int kSize = kFlagsOffset + kPointerSize;
+  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
+                                TORQUE_GENERATED_JSPROMISE_FIELDS)
+
   static const int kSizeWithEmbedderFields =
-      kSize + v8::Promise::kEmbedderFieldCount * kPointerSize;
+      kSize + v8::Promise::kEmbedderFieldCount * kEmbedderDataSlotSize;
 
   // Flags layout.
   // The first two bits store the v8::Promise::PromiseState.
   static const int kStatusBits = 2;
   static const int kHasHandlerBit = 2;
   static const int kHandledHintBit = 3;
+  class AsyncTaskIdField : public BitField<int, kHandledHintBit + 1, 22> {};
 
   static const int kStatusShift = 0;
   static const int kStatusMask = 0x3;
@@ -96,6 +93,8 @@ class JSPromise : public JSObject {
                                                 Handle<Object> reactions,
                                                 Handle<Object> argument,
                                                 PromiseReaction::Type type);
+
+  OBJECT_CONSTRUCTORS(JSPromise, JSObject);
 };
 
 }  // namespace internal

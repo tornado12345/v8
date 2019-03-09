@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 #include "src/objects-inl.h"
-#include "test/unittests/compiler/instruction-selector-unittest.h"
+#include "test/unittests/compiler/backend/instruction-selector-unittest.h"
 
 namespace v8 {
 namespace internal {
@@ -496,10 +496,9 @@ TEST_P(InstructionSelectorLogicalTest, ShiftByImmediate) {
   }
 }
 
-
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest, InstructionSelectorLogicalTest,
-                        ::testing::ValuesIn(kLogicalInstructions));
-
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest,
+                         InstructionSelectorLogicalTest,
+                         ::testing::ValuesIn(kLogicalInstructions));
 
 // -----------------------------------------------------------------------------
 // Add and Sub instructions.
@@ -651,10 +650,8 @@ TEST_P(InstructionSelectorAddSubTest, SignedExtendHalfword) {
   ASSERT_EQ(1U, s[0]->OutputCount());
 }
 
-
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest, InstructionSelectorAddSubTest,
-                        ::testing::ValuesIn(kAddSubInstructions));
-
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest, InstructionSelectorAddSubTest,
+                         ::testing::ValuesIn(kAddSubInstructions));
 
 TEST_F(InstructionSelectorTest, AddImmediateOnLeft) {
   {
@@ -1010,11 +1007,9 @@ TEST_P(InstructionSelectorDPFlagSetTest, BranchWithParameters) {
   EXPECT_EQ(kNotEqual, s[0]->flags_condition());
 }
 
-
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest,
-                        InstructionSelectorDPFlagSetTest,
-                        ::testing::ValuesIn(kDPFlagSetInstructions));
-
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest,
+                         InstructionSelectorDPFlagSetTest,
+                         ::testing::ValuesIn(kDPFlagSetInstructions));
 
 TEST_F(InstructionSelectorTest, Word32AndBranchWithImmediateOnRight) {
   TRACED_FOREACH(int32_t, imm, kLogical32Immediates) {
@@ -1282,13 +1277,13 @@ TEST_P(InstructionSelectorTestAndBranchTest, TestAndBranch32) {
   }
 }
 
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest,
-                        InstructionSelectorTestAndBranchTest,
-                        ::testing::ValuesIn(kTestAndBranchMatchers32));
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest,
+                         InstructionSelectorTestAndBranchTest,
+                         ::testing::ValuesIn(kTestAndBranchMatchers32));
 
 TEST_F(InstructionSelectorTest, Word64AndBranchWithOneBitMaskOnRight) {
   TRACED_FORRANGE(int, bit, 0, 63) {
-    uint64_t mask = 1L << bit;
+    uint64_t mask = 1LL << bit;
     StreamBuilder m(this, MachineType::Int64(), MachineType::Int64());
     RawMachineLabel a, b;
     m.Branch(m.Word64And(m.Parameter(0), m.Int64Constant(mask)), &a, &b);
@@ -1309,7 +1304,7 @@ TEST_F(InstructionSelectorTest, Word64AndBranchWithOneBitMaskOnRight) {
 
 TEST_F(InstructionSelectorTest, Word64AndBranchWithOneBitMaskOnLeft) {
   TRACED_FORRANGE(int, bit, 0, 63) {
-    uint64_t mask = 1L << bit;
+    uint64_t mask = 1LL << bit;
     StreamBuilder m(this, MachineType::Int64(), MachineType::Int64());
     RawMachineLabel a, b;
     m.Branch(m.Word64And(m.Int64Constant(mask), m.Parameter(0)), &a, &b);
@@ -1324,6 +1319,70 @@ TEST_F(InstructionSelectorTest, Word64AndBranchWithOneBitMaskOnLeft) {
     EXPECT_EQ(4U, s[0]->InputCount());
     EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
     EXPECT_EQ(bit, s.ToInt64(s[0]->InputAt(1)));
+  }
+}
+
+TEST_F(InstructionSelectorTest, TestAndBranch64EqualWhenCanCoverFalse) {
+  TRACED_FORRANGE(int, bit, 0, 63) {
+    uint64_t mask = uint64_t{1} << bit;
+    StreamBuilder m(this, MachineType::Int64(), MachineType::Int64());
+    RawMachineLabel a, b, c;
+    Node* n = m.Word64And(m.Parameter(0), m.Int64Constant(mask));
+    m.Branch(m.Word64Equal(n, m.Int64Constant(0)), &a, &b);
+    m.Bind(&a);
+    m.Branch(m.Word64Equal(n, m.Int64Constant(3)), &b, &c);
+    m.Bind(&c);
+    m.Return(m.Int64Constant(1));
+    m.Bind(&b);
+    m.Return(m.Int64Constant(0));
+
+    Stream s = m.Build();
+    ASSERT_EQ(3U, s.size());
+    EXPECT_EQ(kArm64And, s[0]->arch_opcode());
+    EXPECT_EQ(kEqual, s[0]->flags_condition());
+    EXPECT_EQ(kArm64TestAndBranch, s[1]->arch_opcode());
+    EXPECT_EQ(kEqual, s[1]->flags_condition());
+    EXPECT_EQ(kArm64Cmp, s[2]->arch_opcode());
+    EXPECT_EQ(kEqual, s[2]->flags_condition());
+    EXPECT_EQ(2U, s[0]->InputCount());
+  }
+}
+
+TEST_F(InstructionSelectorTest, TestAndBranch64AndWhenCanCoverFalse) {
+  TRACED_FORRANGE(int, bit, 0, 63) {
+    uint64_t mask = uint64_t{1} << bit;
+    StreamBuilder m(this, MachineType::Int64(), MachineType::Int64());
+    RawMachineLabel a, b, c;
+    m.Branch(m.Word64And(m.Parameter(0), m.Int64Constant(mask)), &a, &b);
+    m.Bind(&a);
+    m.Return(m.Int64Constant(1));
+    m.Bind(&b);
+    m.Return(m.Int64Constant(0));
+
+    Stream s = m.Build();
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64TestAndBranch, s[0]->arch_opcode());
+    EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
+    EXPECT_EQ(4U, s[0]->InputCount());
+  }
+}
+
+TEST_F(InstructionSelectorTest, TestAndBranch32AndWhenCanCoverFalse) {
+  TRACED_FORRANGE(int, bit, 0, 31) {
+    uint32_t mask = uint32_t{1} << bit;
+    StreamBuilder m(this, MachineType::Int64(), MachineType::Int64());
+    RawMachineLabel a, b, c;
+    m.Branch(m.Word32And(m.Parameter(0), m.Int32Constant(mask)), &a, &b);
+    m.Bind(&a);
+    m.Return(m.Int32Constant(1));
+    m.Bind(&b);
+    m.Return(m.Int32Constant(0));
+
+    Stream s = m.Build();
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64TestAndBranch32, s[0]->arch_opcode());
+    EXPECT_EQ(InstructionOperand::IMMEDIATE, s[0]->InputAt(1)->kind());
+    EXPECT_EQ(4U, s[0]->InputCount());
   }
 }
 
@@ -1697,10 +1756,9 @@ TEST_P(InstructionSelectorOvfAddSubTest, RORShift) {
   }
 }
 
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest,
-                        InstructionSelectorOvfAddSubTest,
-                        ::testing::ValuesIn(kOvfAddSubInstructions));
-
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest,
+                         InstructionSelectorOvfAddSubTest,
+                         ::testing::ValuesIn(kOvfAddSubInstructions));
 
 TEST_F(InstructionSelectorTest, OvfFlagAddImmediateOnLeft) {
   TRACED_FOREACH(int32_t, imm, kAddSubImmediates) {
@@ -1815,10 +1873,8 @@ TEST_P(InstructionSelectorShiftTest, Immediate) {
   }
 }
 
-
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest, InstructionSelectorShiftTest,
-                        ::testing::ValuesIn(kShiftInstructions));
-
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest, InstructionSelectorShiftTest,
+                         ::testing::ValuesIn(kShiftInstructions));
 
 TEST_F(InstructionSelectorTest, Word64ShlWithChangeInt32ToInt64) {
   TRACED_FORRANGE(int64_t, x, 32, 63) {
@@ -1908,10 +1964,8 @@ TEST_P(InstructionSelectorMulDivTest, Parameter) {
   EXPECT_EQ(1U, s[0]->OutputCount());
 }
 
-
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest, InstructionSelectorMulDivTest,
-                        ::testing::ValuesIn(kMulDivInstructions));
-
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest, InstructionSelectorMulDivTest,
+                         ::testing::ValuesIn(kMulDivInstructions));
 
 namespace {
 
@@ -2016,11 +2070,9 @@ TEST_P(InstructionSelectorIntDPWithIntMulTest, NegativeMul) {
   }
 }
 
-
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest,
-                        InstructionSelectorIntDPWithIntMulTest,
-                        ::testing::ValuesIn(kMulDPInstructions));
-
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest,
+                         InstructionSelectorIntDPWithIntMulTest,
+                         ::testing::ValuesIn(kMulDPInstructions));
 
 TEST_F(InstructionSelectorTest, Int32MulWithImmediate) {
   // x * (2^k + 1) -> x + (x << k)
@@ -2304,10 +2356,9 @@ TEST_P(InstructionSelectorFPArithTest, Parameter) {
   EXPECT_EQ(1U, s[0]->OutputCount());
 }
 
-
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest, InstructionSelectorFPArithTest,
-                        ::testing::ValuesIn(kFPArithInstructions));
-
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest,
+                         InstructionSelectorFPArithTest,
+                         ::testing::ValuesIn(kFPArithInstructions));
 
 typedef InstructionSelectorTestWithParam<FPCmp> InstructionSelectorFPCmpTest;
 
@@ -2364,10 +2415,8 @@ TEST_P(InstructionSelectorFPCmpTest, WithImmediateZeroOnLeft) {
   EXPECT_EQ(cmp.commuted_cond, s[0]->flags_condition());
 }
 
-
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest, InstructionSelectorFPCmpTest,
-                        ::testing::ValuesIn(kFPCmpInstructions));
-
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest, InstructionSelectorFPCmpTest,
+                         ::testing::ValuesIn(kFPCmpInstructions));
 
 // -----------------------------------------------------------------------------
 // Conversions.
@@ -2391,10 +2440,9 @@ TEST_P(InstructionSelectorConversionTest, Parameter) {
   EXPECT_EQ(1U, s[0]->OutputCount());
 }
 
-
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest,
-                        InstructionSelectorConversionTest,
-                        ::testing::ValuesIn(kConversionInstructions));
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest,
+                         InstructionSelectorConversionTest,
+                         ::testing::ValuesIn(kConversionInstructions));
 
 typedef InstructionSelectorTestWithParam<MachInst2>
     InstructionSelectorElidedChangeUint32ToUint64Test;
@@ -2413,9 +2461,9 @@ TEST_P(InstructionSelectorElidedChangeUint32ToUint64Test, Parameter) {
   EXPECT_EQ(1U, s[0]->OutputCount());
 }
 
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest,
-                        InstructionSelectorElidedChangeUint32ToUint64Test,
-                        ::testing::ValuesIn(kCanElideChangeUint32ToUint64));
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest,
+                         InstructionSelectorElidedChangeUint32ToUint64Test,
+                         ::testing::ValuesIn(kCanElideChangeUint32ToUint64));
 
 TEST_F(InstructionSelectorTest, ChangeUint32ToUint64AfterLoad) {
   // For each case, make sure the `ChangeUint32ToUint64` node turned into a
@@ -2809,10 +2857,9 @@ TEST_P(InstructionSelectorMemoryAccessTest, StoreWithShiftedIndex) {
   }
 }
 
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest,
-                        InstructionSelectorMemoryAccessTest,
-                        ::testing::ValuesIn(kMemoryAccesses));
-
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest,
+                         InstructionSelectorMemoryAccessTest,
+                         ::testing::ValuesIn(kMemoryAccesses));
 
 // -----------------------------------------------------------------------------
 // Comparison instructions.
@@ -2879,10 +2926,9 @@ TEST_P(InstructionSelectorComparisonTest, WithImmediate) {
   }
 }
 
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest,
-                        InstructionSelectorComparisonTest,
-                        ::testing::ValuesIn(kComparisonInstructions));
-
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest,
+                         InstructionSelectorComparisonTest,
+                         ::testing::ValuesIn(kComparisonInstructions));
 
 TEST_F(InstructionSelectorTest, Word32EqualWithZero) {
   {
@@ -3641,9 +3687,9 @@ TEST_P(InstructionSelectorFlagSettingTest, CommuteShift) {
   }
 }
 
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest,
-                        InstructionSelectorFlagSettingTest,
-                        ::testing::ValuesIn(kFlagSettingInstructions));
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest,
+                         InstructionSelectorFlagSettingTest,
+                         ::testing::ValuesIn(kFlagSettingInstructions));
 
 TEST_F(InstructionSelectorTest, TstInvalidImmediate) {
   // Make sure we do not generate an invalid immediate for TST.
@@ -3746,8 +3792,8 @@ TEST_P(InstructionSelectorLogicalWithNotRHSTest, Parameter) {
   {
     StreamBuilder m(this, type, type, type);
     if (type == MachineType::Int32()) {
-      m.Return(
-          (m.*inst.constructor)(m.Parameter(0), m.Word32Not(m.Parameter(1))));
+      m.Return((m.*inst.constructor)(m.Parameter(0),
+                                     m.Word32BitwiseNot(m.Parameter(1))));
     } else {
       ASSERT_EQ(MachineType::Int64(), type);
       m.Return(
@@ -3762,8 +3808,8 @@ TEST_P(InstructionSelectorLogicalWithNotRHSTest, Parameter) {
   {
     StreamBuilder m(this, type, type, type);
     if (type == MachineType::Int32()) {
-      m.Return(
-          (m.*inst.constructor)(m.Word32Not(m.Parameter(0)), m.Parameter(1)));
+      m.Return((m.*inst.constructor)(m.Word32BitwiseNot(m.Parameter(0)),
+                                     m.Parameter(1)));
     } else {
       ASSERT_EQ(MachineType::Int64(), type);
       m.Return(
@@ -3777,15 +3823,13 @@ TEST_P(InstructionSelectorLogicalWithNotRHSTest, Parameter) {
   }
 }
 
+INSTANTIATE_TEST_SUITE_P(InstructionSelectorTest,
+                         InstructionSelectorLogicalWithNotRHSTest,
+                         ::testing::ValuesIn(kLogicalWithNotRHSs));
 
-INSTANTIATE_TEST_CASE_P(InstructionSelectorTest,
-                        InstructionSelectorLogicalWithNotRHSTest,
-                        ::testing::ValuesIn(kLogicalWithNotRHSs));
-
-
-TEST_F(InstructionSelectorTest, Word32NotWithParameter) {
+TEST_F(InstructionSelectorTest, Word32BitwiseNotWithParameter) {
   StreamBuilder m(this, MachineType::Int32(), MachineType::Int32());
-  m.Return(m.Word32Not(m.Parameter(0)));
+  m.Return(m.Word32BitwiseNot(m.Parameter(0)));
   Stream s = m.Build();
   ASSERT_EQ(1U, s.size());
   EXPECT_EQ(kArm64Not32, s[0]->arch_opcode());
@@ -4417,13 +4461,91 @@ TEST_F(InstructionSelectorTest, CompareFloat64HighGreaterThanOrEqualZero64) {
   EXPECT_EQ(63, s.ToInt32(s[1]->InputAt(1)));
 }
 
-TEST_F(InstructionSelectorTest, SpeculationFence) {
-  StreamBuilder m(this, MachineType::Int32());
-  m.SpeculationFence();
+TEST_F(InstructionSelectorTest, StackCheck0) {
+  StreamBuilder m(this, MachineType::Int32(), MachineType::Pointer());
+  Node* const sp = m.LoadStackPointer();
+  Node* const stack_limit = m.Load(MachineType::Int64(), m.Parameter(0));
+  Node* const interrupt = m.UintPtrLessThan(sp, stack_limit);
+
+  RawMachineLabel if_true, if_false;
+  m.Branch(interrupt, &if_true, &if_false);
+
+  m.Bind(&if_true);
+  m.Return(m.Int32Constant(1));
+
+  m.Bind(&if_false);
   m.Return(m.Int32Constant(0));
+
   Stream s = m.Build();
+
+  ASSERT_EQ(2U, s.size());
+  EXPECT_EQ(kArm64Ldr, s[0]->arch_opcode());
+  EXPECT_EQ(kArm64Cmp, s[1]->arch_opcode());
+  EXPECT_EQ(4U, s[1]->InputCount());
+  EXPECT_EQ(0U, s[1]->OutputCount());
+}
+
+TEST_F(InstructionSelectorTest, StackCheck1) {
+  StreamBuilder m(this, MachineType::Int32(), MachineType::Pointer());
+  Node* const sp = m.LoadStackPointer();
+  Node* const stack_limit = m.Load(MachineType::Int64(), m.Parameter(0));
+  Node* const sp_within_limit = m.UintPtrLessThan(stack_limit, sp);
+
+  RawMachineLabel if_true, if_false;
+  m.Branch(sp_within_limit, &if_true, &if_false);
+
+  m.Bind(&if_true);
+  m.Return(m.Int32Constant(1));
+
+  m.Bind(&if_false);
+  m.Return(m.Int32Constant(0));
+
+  Stream s = m.Build();
+
+  ASSERT_EQ(2U, s.size());
+  EXPECT_EQ(kArm64Ldr, s[0]->arch_opcode());
+  EXPECT_EQ(kArm64Cmp, s[1]->arch_opcode());
+  EXPECT_EQ(4U, s[1]->InputCount());
+  EXPECT_EQ(0U, s[1]->OutputCount());
+}
+
+TEST_F(InstructionSelectorTest, ExternalReferenceLoad1) {
+  // Test offsets we can use kMode_Root for.
+  const int64_t kOffsets[] = {0, 1, 4, INT32_MIN, INT32_MAX};
+  TRACED_FOREACH(int64_t, offset, kOffsets) {
+    StreamBuilder m(this, MachineType::Int64());
+    ExternalReference reference =
+        bit_cast<ExternalReference>(isolate()->isolate_root() + offset);
+    Node* const value =
+        m.Load(MachineType::Int64(), m.ExternalConstant(reference));
+    m.Return(value);
+
+    Stream s = m.Build();
+
+    ASSERT_EQ(1U, s.size());
+    EXPECT_EQ(kArm64Ldr, s[0]->arch_opcode());
+    EXPECT_EQ(kMode_Root, s[0]->addressing_mode());
+    EXPECT_EQ(1U, s[0]->InputCount());
+    EXPECT_EQ(s.ToInt64(s[0]->InputAt(0)), offset);
+    EXPECT_EQ(1U, s[0]->OutputCount());
+  }
+}
+
+TEST_F(InstructionSelectorTest, ExternalReferenceLoad2) {
+  // Offset too large, we cannot use kMode_Root.
+  StreamBuilder m(this, MachineType::Int64());
+  int64_t offset = 0x100000000;
+  ExternalReference reference =
+      bit_cast<ExternalReference>(isolate()->isolate_root() + offset);
+  Node* const value =
+      m.Load(MachineType::Int64(), m.ExternalConstant(reference));
+  m.Return(value);
+
+  Stream s = m.Build();
+
   ASSERT_EQ(1U, s.size());
-  EXPECT_EQ(kArm64DsbIsb, s[0]->arch_opcode());
+  EXPECT_EQ(kArm64Ldr, s[0]->arch_opcode());
+  EXPECT_NE(kMode_Root, s[0]->addressing_mode());
 }
 
 }  // namespace compiler

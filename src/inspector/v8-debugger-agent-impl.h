@@ -6,6 +6,7 @@
 #define V8_INSPECTOR_V8_DEBUGGER_AGENT_IMPL_H_
 
 #include <deque>
+#include <unordered_map>
 #include <vector>
 
 #include "src/base/macros.h"
@@ -95,8 +96,6 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
   Response stepOver() override;
   Response stepInto(Maybe<bool> inBreakOnAsyncCall) override;
   Response stepOut() override;
-  void scheduleStepIntoAsync(
-      std::unique_ptr<ScheduleStepIntoAsyncCallback> callback) override;
   Response pauseOnAsyncCall(std::unique_ptr<protocol::Runtime::StackTraceId>
                                 inParentStackTraceId) override;
   Response setPauseOnExceptions(const String16& pauseState) override;
@@ -141,8 +140,8 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
   // Interface for V8InspectorImpl
   void didPause(int contextId, v8::Local<v8::Value> exception,
                 const std::vector<v8::debug::BreakpointId>& hitBreakpoints,
-                bool isPromiseRejection, bool isUncaught, bool isOOMBreak,
-                bool isAssert);
+                v8::debug::ExceptionType exceptionType, bool isUncaught,
+                bool isOOMBreak, bool isAssert);
   void didContinue();
   void didParseSource(std::unique_ptr<V8DebuggerScript>, bool success);
 
@@ -183,11 +182,11 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
   bool isPaused() const;
 
   using ScriptsMap =
-      protocol::HashMap<String16, std::unique_ptr<V8DebuggerScript>>;
+      std::unordered_map<String16, std::unique_ptr<V8DebuggerScript>>;
   using BreakpointIdToDebuggerBreakpointIdsMap =
-      protocol::HashMap<String16, std::vector<v8::debug::BreakpointId>>;
+      std::unordered_map<String16, std::vector<v8::debug::BreakpointId>>;
   using DebuggerBreakpointIdToBreakpointIdMap =
-      protocol::HashMap<v8::debug::BreakpointId, String16>;
+      std::unordered_map<v8::debug::BreakpointId, String16>;
 
   V8InspectorImpl* m_inspector;
   V8Debugger* m_debugger;
@@ -216,7 +215,7 @@ class V8DebuggerAgentImpl : public protocol::Debugger::Backend {
   bool m_breakpointsActive = false;
 
   std::unique_ptr<V8Regex> m_blackboxPattern;
-  protocol::HashMap<String16, std::vector<std::pair<int, int>>>
+  std::unordered_map<String16, std::vector<std::pair<int, int>>>
       m_blackboxedPositions;
 
   DISALLOW_COPY_AND_ASSIGN(V8DebuggerAgentImpl);

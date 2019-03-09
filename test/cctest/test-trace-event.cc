@@ -39,7 +39,7 @@ typedef std::vector<MockTraceObject*> MockTraceObjectList;
 class MockTracingController : public v8::TracingController {
  public:
   MockTracingController() = default;
-  ~MockTracingController() {
+  ~MockTracingController() override {
     for (size_t i = 0; i < trace_object_list_.size(); ++i) {
       delete trace_object_list_[i];
     }
@@ -75,7 +75,7 @@ class MockTracingController : public v8::TracingController {
                                 const char* name, uint64_t handle) override {}
 
   const uint8_t* GetCategoryGroupEnabled(const char* name) override {
-    if (strcmp(name, "v8-cat")) {
+    if (strncmp(name, "v8-cat", 6)) {
       static uint8_t no = 0;
       return &no;
     } else {
@@ -98,7 +98,7 @@ class MockTracingPlatform : public TestPlatform {
     // Now that it's completely constructed, make this the current platform.
     i::V8::SetPlatformForTesting(this);
   }
-  virtual ~MockTracingPlatform() {}
+  ~MockTracingPlatform() override = default;
 
   v8::TracingController* GetTracingController() override {
     return &tracing_controller_;
@@ -234,26 +234,6 @@ TEST(TestEventWithId) {
   CHECK_EQ(event_id, GET_TRACE_OBJECT(1)->id);
 }
 
-TEST(TestEventInContext) {
-  MockTracingPlatform platform;
-
-  static uint64_t isolate_id = 0x20151021;
-  {
-    TRACE_EVENT_SCOPED_CONTEXT("v8-cat", "Isolate", isolate_id);
-    TRACE_EVENT0("v8-cat", "e");
-  }
-
-  CHECK_EQ(3, GET_TRACE_OBJECTS_LIST->size());
-  CHECK_EQ(TRACE_EVENT_PHASE_ENTER_CONTEXT, GET_TRACE_OBJECT(0)->phase);
-  CHECK_EQ("Isolate", GET_TRACE_OBJECT(0)->name);
-  CHECK_EQ(isolate_id, GET_TRACE_OBJECT(0)->id);
-  CHECK_EQ(TRACE_EVENT_PHASE_COMPLETE, GET_TRACE_OBJECT(1)->phase);
-  CHECK_EQ("e", GET_TRACE_OBJECT(1)->name);
-  CHECK_EQ(TRACE_EVENT_PHASE_LEAVE_CONTEXT, GET_TRACE_OBJECT(2)->phase);
-  CHECK_EQ("Isolate", GET_TRACE_OBJECT(2)->name);
-  CHECK_EQ(isolate_id, GET_TRACE_OBJECT(2)->id);
-}
-
 TEST(TestEventWithTimestamp) {
   MockTracingPlatform platform;
 
@@ -281,4 +261,135 @@ TEST(TestEventWithTimestamp) {
 
   CHECK_EQ(20683, GET_TRACE_OBJECT(3)->timestamp);
   CHECK_EQ(32832, GET_TRACE_OBJECT(4)->timestamp);
+}
+
+TEST(BuiltinsIsTraceCategoryEnabled) {
+  CcTest::InitializeVM();
+  MockTracingPlatform platform;
+
+  v8::Isolate* isolate = CcTest::isolate();
+  v8::HandleScope handle_scope(isolate);
+  LocalContext env;
+
+  v8::Local<v8::Object> binding = env->GetExtrasBindingObject();
+  CHECK(!binding.IsEmpty());
+
+  auto undefined = v8::Undefined(isolate);
+  auto isTraceCategoryEnabled =
+      binding->Get(env.local(), v8_str("isTraceCategoryEnabled"))
+          .ToLocalChecked()
+          .As<v8::Function>();
+
+  {
+    // Test with an enabled category
+    v8::Local<v8::Value> argv[] = {v8_str("v8-cat")};
+    auto result = isTraceCategoryEnabled->Call(env.local(), undefined, 1, argv)
+                      .ToLocalChecked()
+                      .As<v8::Boolean>();
+
+    CHECK(result->BooleanValue(isolate));
+  }
+
+  {
+    // Test with a disabled category
+    v8::Local<v8::Value> argv[] = {v8_str("cat")};
+    auto result = isTraceCategoryEnabled->Call(env.local(), undefined, 1, argv)
+                      .ToLocalChecked()
+                      .As<v8::Boolean>();
+
+    CHECK(!result->BooleanValue(isolate));
+  }
+
+  {
+    // Test with an enabled utf8 category
+    v8::Local<v8::Value> argv[] = {v8_str("v8-cat\u20ac")};
+    auto result = isTraceCategoryEnabled->Call(env.local(), undefined, 1, argv)
+                      .ToLocalChecked()
+                      .As<v8::Boolean>();
+
+    CHECK(result->BooleanValue(isolate));
+  }
+}
+
+TEST(BuiltinsTrace) {
+  CcTest::InitializeVM();
+  MockTracingPlatform platform;
+
+  v8::Isolate* isolate = CcTest::isolate();
+  v8::HandleScope handle_scope(isolate);
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  LocalContext env;
+
+  v8::Local<v8::Object> binding = env->GetExtrasBindingObject();
+  CHECK(!binding.IsEmpty());
+
+  auto undefined = v8::Undefined(isolate);
+  auto trace = binding->Get(env.local(), v8_str("trace"))
+                   .ToLocalChecked()
+                   .As<v8::Function>();
+
+  // Test with disabled category
+  {
+    v8::Local<v8::String> category = v8_str("cat");
+    v8::Local<v8::String> name = v8_str("name");
+    v8::Local<v8::Value> argv[] = {
+        v8::Integer::New(isolate, 'b'),                // phase
+        category, name, v8::Integer::New(isolate, 0),  // id
+        undefined                                      // data
+    };
+    auto result = trace->Call(env.local(), undefined, 5, argv)
+                      .ToLocalChecked()
+                      .As<v8::Boolean>();
+
+    CHECK(!result->BooleanValue(isolate));
+    CHECK_EQ(0, GET_TRACE_OBJECTS_LIST->size());
+  }
+
+  // Test with enabled category
+  {
+    v8::Local<v8::String> category = v8_str("v8-cat");
+    v8::Local<v8::String> name = v8_str("name");
+    v8::Local<v8::Object> data = v8::Object::New(isolate);
+    data->Set(context, v8_str("foo"), v8_str("bar")).FromJust();
+    v8::Local<v8::Value> argv[] = {
+        v8::Integer::New(isolate, 'b'),                  // phase
+        category, name, v8::Integer::New(isolate, 123),  // id
+        data                                             // data arg
+    };
+    auto result = trace->Call(env.local(), undefined, 5, argv)
+                      .ToLocalChecked()
+                      .As<v8::Boolean>();
+
+    CHECK(result->BooleanValue(isolate));
+    CHECK_EQ(1, GET_TRACE_OBJECTS_LIST->size());
+
+    CHECK_EQ(123, GET_TRACE_OBJECT(0)->id);
+    CHECK_EQ('b', GET_TRACE_OBJECT(0)->phase);
+    CHECK_EQ("name", GET_TRACE_OBJECT(0)->name);
+    CHECK_EQ(1, GET_TRACE_OBJECT(0)->num_args);
+  }
+
+  // Test with enabled utf8 category
+  {
+    v8::Local<v8::String> category = v8_str("v8-cat\u20ac");
+    v8::Local<v8::String> name = v8_str("name\u20ac");
+    v8::Local<v8::Object> data = v8::Object::New(isolate);
+    data->Set(context, v8_str("foo"), v8_str("bar")).FromJust();
+    v8::Local<v8::Value> argv[] = {
+        v8::Integer::New(isolate, 'b'),                  // phase
+        category, name, v8::Integer::New(isolate, 123),  // id
+        data                                             // data arg
+    };
+    auto result = trace->Call(env.local(), undefined, 5, argv)
+                      .ToLocalChecked()
+                      .As<v8::Boolean>();
+
+    CHECK(result->BooleanValue(isolate));
+    CHECK_EQ(2, GET_TRACE_OBJECTS_LIST->size());
+
+    CHECK_EQ(123, GET_TRACE_OBJECT(1)->id);
+    CHECK_EQ('b', GET_TRACE_OBJECT(1)->phase);
+    CHECK_EQ("name\u20ac", GET_TRACE_OBJECT(1)->name);
+    CHECK_EQ(1, GET_TRACE_OBJECT(1)->num_args);
+  }
 }

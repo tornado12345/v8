@@ -21,15 +21,26 @@ namespace compiler {
 #define PURE_ASSEMBLER_MACH_UNOP_LIST(V) \
   V(ChangeInt32ToInt64)                  \
   V(ChangeInt32ToFloat64)                \
+  V(ChangeInt64ToFloat64)                \
   V(ChangeUint32ToFloat64)               \
   V(ChangeUint32ToUint64)                \
   V(ChangeFloat64ToInt32)                \
+  V(ChangeFloat64ToInt64)                \
   V(ChangeFloat64ToUint32)               \
   V(TruncateInt64ToInt32)                \
   V(RoundFloat64ToInt32)                 \
+  V(TruncateFloat64ToInt64)              \
   V(TruncateFloat64ToWord32)             \
+  V(Float64ExtractLowWord32)             \
   V(Float64ExtractHighWord32)            \
-  V(Float64Abs)
+  V(BitcastInt32ToFloat32)               \
+  V(BitcastInt64ToFloat64)               \
+  V(BitcastFloat32ToInt32)               \
+  V(BitcastFloat64ToInt64)               \
+  V(Float64Abs)                          \
+  V(Word32ReverseBytes)                  \
+  V(Word64ReverseBytes)                  \
+  V(Float64SilenceNaN)
 
 #define PURE_ASSEMBLER_MACH_BINOP_LIST(V) \
   V(WordShl)                              \
@@ -50,8 +61,10 @@ namespace compiler {
   V(Int32Sub)                             \
   V(Int32Mul)                             \
   V(Int32LessThanOrEqual)                 \
-  V(Uint32LessThanOrEqual)                \
   V(Uint32LessThan)                       \
+  V(Uint32LessThanOrEqual)                \
+  V(Uint64LessThan)                       \
+  V(Uint64LessThanOrEqual)                \
   V(Int32LessThan)                        \
   V(Float64Add)                           \
   V(Float64Sub)                           \
@@ -60,7 +73,10 @@ namespace compiler {
   V(Float64Equal)                         \
   V(Float64LessThan)                      \
   V(Float64LessThanOrEqual)               \
+  V(Float64InsertLowWord32)               \
+  V(Float64InsertHighWord32)              \
   V(Word32Equal)                          \
+  V(Word64Equal)                          \
   V(WordEqual)
 
 #define CHECKED_ASSEMBLER_MACH_BINOP_LIST(V) \
@@ -76,6 +92,8 @@ namespace compiler {
   V(TrueConstant)                          \
   V(FalseConstant)                         \
   V(NullConstant)                          \
+  V(BigIntMapConstant)                     \
+  V(BooleanMapConstant)                    \
   V(HeapNumberMapConstant)                 \
   V(NoContextConstant)                     \
   V(EmptyStringConstant)                   \
@@ -84,8 +102,8 @@ namespace compiler {
   V(FixedArrayMapConstant)                 \
   V(FixedDoubleArrayMapConstant)           \
   V(ToNumberBuiltinConstant)               \
-  V(AllocateInNewSpaceStubConstant)        \
-  V(AllocateInOldSpaceStubConstant)
+  V(AllocateInYoungGenerationStubConstant) \
+  V(AllocateInOldGenerationStubConstant)
 
 class GraphAssembler;
 
@@ -167,7 +185,8 @@ class GraphAssembler {
   Node* IntPtrConstant(intptr_t value);
   Node* Uint32Constant(int32_t value);
   Node* Int32Constant(int32_t value);
-  Node* UniqueInt32Constant(int32_t value);
+  Node* Int64Constant(int64_t value);
+  Node* UniqueIntPtrConstant(intptr_t value);
   Node* SmiConstant(int32_t value);
   Node* Float64Constant(double value);
   Node* Projection(int index, Node* value);
@@ -200,6 +219,7 @@ class GraphAssembler {
 
   Node* ToNumber(Node* value);
   Node* BitcastWordToTagged(Node* value);
+  Node* BitcastTaggedToWord(Node* value);
   Node* Allocate(PretenureFlag pretenure, Node* size);
   Node* LoadField(FieldAccess const&, Node* object);
   Node* LoadElement(ElementAccess const&, Node* object, Node* index);
@@ -210,13 +230,19 @@ class GraphAssembler {
   Node* Store(StoreRepresentation rep, Node* object, Node* offset, Node* value);
   Node* Load(MachineType rep, Node* object, Node* offset);
 
+  Node* StoreUnaligned(MachineRepresentation rep, Node* object, Node* offset,
+                       Node* value);
+  Node* LoadUnaligned(MachineType rep, Node* object, Node* offset);
+
   Node* Retain(Node* buffer);
   Node* UnsafePointerAdd(Node* base, Node* external);
 
   Node* Word32PoisonOnSpeculation(Node* value);
 
-  Node* DeoptimizeIf(DeoptimizeReason reason, VectorSlotPair const& feedback,
-                     Node* condition, Node* frame_state);
+  Node* DeoptimizeIf(
+      DeoptimizeReason reason, VectorSlotPair const& feedback, Node* condition,
+      Node* frame_state,
+      IsSafetyCheck is_safety_check = IsSafetyCheck::kSafetyCheck);
   Node* DeoptimizeIfNot(
       DeoptimizeReason reason, VectorSlotPair const& feedback, Node* condition,
       Node* frame_state,
@@ -234,7 +260,8 @@ class GraphAssembler {
   void Goto(GraphAssemblerLabel<sizeof...(Vars)>* label, Vars...);
 
   void Branch(Node* condition, GraphAssemblerLabel<0u>* if_true,
-              GraphAssemblerLabel<0u>* if_false);
+              GraphAssemblerLabel<0u>* if_false,
+              IsSafetyCheck is_safety_check = IsSafetyCheck::kNoSafetyCheck);
 
   // Control helpers.
   // {GotoIf(c, l)} is equivalent to {Branch(c, l, templ);Bind(templ)}.
@@ -258,6 +285,7 @@ class GraphAssembler {
   Operator const* ToNumberOperator();
 
   JSGraph* jsgraph() const { return jsgraph_; }
+  Isolate* isolate() const { return jsgraph_->isolate(); }
   Graph* graph() const { return jsgraph_->graph(); }
   Zone* temp_zone() const { return temp_zone_; }
   CommonOperatorBuilder* common() const { return jsgraph()->common(); }

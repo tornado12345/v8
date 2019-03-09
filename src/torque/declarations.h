@@ -8,103 +8,142 @@
 #include <string>
 
 #include "src/torque/declarable.h"
-#include "src/torque/scope.h"
+#include "src/torque/utils.h"
 
 namespace v8 {
 namespace internal {
 namespace torque {
 
+static constexpr const char* const kFromConstexprMacroName = "FromConstexpr";
+static constexpr const char* kTrueLabelName = "_True";
+static constexpr const char* kFalseLabelName = "_False";
+
+template <class T>
+std::vector<T*> FilterDeclarables(const std::vector<Declarable*> list) {
+  std::vector<T*> result;
+  for (Declarable* declarable : list) {
+    if (T* t = T::DynamicCast(declarable)) {
+      result.push_back(t);
+    }
+  }
+  return result;
+}
+
 class Declarations {
  public:
-  explicit Declarations(SourceFileMap* source_file_map)
-      : source_file_map_(source_file_map), unique_declaration_number_(0) {}
+  static std::vector<Declarable*> TryLookup(const QualifiedName& name) {
+    return CurrentScope::Get()->Lookup(name);
+  }
 
-  Declarable* Lookup(const std::string& name) { return chain_.Lookup(name); }
+  static std::vector<Declarable*> TryLookupShallow(const QualifiedName& name) {
+    return CurrentScope::Get()->LookupShallow(name);
+  }
 
-  Declarable* Lookup(SourcePosition pos, const std::string& name) {
-    Declarable* d = Lookup(name);
-    if (d == nullptr) {
-      std::stringstream s;
-      s << "cannot find \"" << name << "\" at " << PositionAsString(pos);
-      ReportError(s.str());
+  template <class T>
+  static std::vector<T*> TryLookup(const QualifiedName& name) {
+    return FilterDeclarables<T>(TryLookup(name));
+  }
+
+  static std::vector<Declarable*> Lookup(const QualifiedName& name) {
+    std::vector<Declarable*> d = TryLookup(name);
+    if (d.empty()) {
+      ReportError("cannot find \"", name, "\"");
     }
     return d;
   }
 
-  Type LookupType(SourcePosition pos, const std::string& name);
+  static std::vector<Declarable*> LookupGlobalScope(const std::string& name);
 
-  Value* LookupValue(SourcePosition pos, const std::string& name);
+  static const TypeAlias* LookupTypeAlias(const QualifiedName& name);
+  static const Type* LookupType(const QualifiedName& name);
+  static const Type* LookupType(std::string name);
+  static const Type* LookupGlobalType(const std::string& name);
+  static const Type* GetType(TypeExpression* type_expression);
 
-  Macro* LookupMacro(SourcePosition pos, const std::string& name,
-                     const TypeVector& types);
+  static Builtin* FindSomeInternalBuiltinWithType(
+      const BuiltinPointerType* type);
 
-  Builtin* LookupBuiltin(const SourcePosition& pos, const std::string& name);
+  static Value* LookupValue(const QualifiedName& name);
 
-  Type DeclareType(SourcePosition pos, const std::string& name,
-                   const std::string& generated,
-                   const std::string* parent = nullptr);
+  static Macro* TryLookupMacro(const std::string& name,
+                               const TypeVector& types);
+  static base::Optional<Builtin*> TryLookupBuiltin(const QualifiedName& name);
 
-  Label* DeclareLabel(SourcePosition pos, const std::string& name);
+  static std::vector<Generic*> LookupGeneric(const std::string& name);
+  static Generic* LookupUniqueGeneric(const QualifiedName& name);
 
-  Macro* DeclareMacro(SourcePosition pos, const std::string& name,
-                      const Signature& signature);
+  static Namespace* DeclareNamespace(const std::string& name);
 
-  Builtin* DeclareBuiltin(SourcePosition pos, const std::string& name,
-                          Builtin::Kind kind, const Signature& signature);
+  static const AbstractType* DeclareAbstractType(
+      const Identifier* name, bool transient, std::string generated,
+      base::Optional<const AbstractType*> non_constexpr_version,
+      const base::Optional<std::string>& parent = {});
 
-  RuntimeFunction* DeclareRuntimeFunction(SourcePosition pos,
-                                          const std::string& name,
-                                          const Signature& signature);
+  static void DeclareType(const Identifier* name, const Type* type,
+                          bool redeclaration);
 
-  Variable* DeclareVariable(SourcePosition pos, const std::string& var,
-                            Type type);
+  static StructType* DeclareStruct(const Identifier* name);
 
-  Parameter* DeclareParameter(SourcePosition pos, const std::string& name,
-                              const std::string& mangled_name, Type type);
+  static ClassType* DeclareClass(const Type* super, const Identifier* name,
+                                 bool is_extern, bool transient,
+                                 const std::string& generates);
 
-  Label* DeclarePrivateLabel(SourcePosition pos, const std::string& name);
+  static Macro* CreateMacro(std::string external_name,
+                            std::string readable_name,
+                            base::Optional<std::string> external_assembler_name,
+                            Signature signature, bool transitioning,
+                            base::Optional<Statement*> body);
+  static Macro* DeclareMacro(
+      const std::string& name,
+      base::Optional<std::string> external_assembler_name,
+      const Signature& signature, bool transitioning,
+      base::Optional<Statement*> body, base::Optional<std::string> op = {});
 
-  void DeclareConstant(SourcePosition pos, const std::string& name, Type type,
-                       const std::string& value);
+  static Method* CreateMethod(AggregateType* class_type,
+                              const std::string& name, Signature signature,
+                              bool transitioning, Statement* body);
 
-  std::set<const Variable*> GetLiveVariables() {
-    return chain_.GetLiveVariables();
+  static Intrinsic* CreateIntrinsic(const std::string& name,
+                                    const Signature& signature);
+
+  static Intrinsic* DeclareIntrinsic(const std::string& name,
+                                     const Signature& signature);
+
+  static Builtin* CreateBuiltin(std::string external_name,
+                                std::string readable_name, Builtin::Kind kind,
+                                Signature signature, bool transitioning,
+                                base::Optional<Statement*> body);
+  static Builtin* DeclareBuiltin(const std::string& name, Builtin::Kind kind,
+                                 const Signature& signature, bool transitioning,
+                                 base::Optional<Statement*> body);
+
+  static RuntimeFunction* DeclareRuntimeFunction(const std::string& name,
+                                                 const Signature& signature,
+                                                 bool transitioning);
+
+  static void DeclareExternConstant(Identifier* name, const Type* type,
+                                    std::string value);
+  static NamespaceConstant* DeclareNamespaceConstant(Identifier* name,
+                                                     const Type* type,
+                                                     Expression* body);
+
+  static Generic* DeclareGeneric(const std::string& name,
+                                 GenericDeclaration* generic);
+
+  template <class T>
+  static T* Declare(const std::string& name, T* d) {
+    CurrentScope::Get()->AddDeclarable(name, d);
+    return d;
   }
-
-  std::string PositionAsString(SourcePosition pos) {
-    return source_file_map_->PositionAsString(pos);
+  template <class T>
+  static T* Declare(const std::string& name, std::unique_ptr<T> d) {
+    return CurrentScope::Get()->AddDeclarable(name,
+                                              RegisterDeclarable(std::move(d)));
   }
+  static Macro* DeclareOperator(const std::string& name, Macro* m);
 
-  class NodeScopeActivator;
-
- private:
-  Scope* GetNodeScope(const AstNode* node);
-
-  void Declare(const std::string& name, std::unique_ptr<Declarable> d) {
-    Declarable* ptr = d.get();
-    declarables_.emplace_back(std::move(d));
-    chain_.Declare(name, ptr);
-  }
-
-  int GetNextUniqueDeclarationNumber() { return unique_declaration_number_++; }
-
-  void CheckAlreadyDeclared(SourcePosition pos, const std::string& name,
-                            const char* new_type);
-
-  SourceFileMap* source_file_map_;
-  int unique_declaration_number_;
-  ScopeChain chain_;
-  std::vector<std::unique_ptr<Declarable>> declarables_;
-  std::map<const AstNode*, Scope*> node_scopes_;
-};
-
-class Declarations::NodeScopeActivator {
- public:
-  NodeScopeActivator(Declarations* declarations, AstNode* node)
-      : activator_(declarations->GetNodeScope(node)) {}
-
- private:
-  Scope::Activator activator_;
+  static std::string GetGeneratedCallableName(
+      const std::string& name, const TypeVector& specialized_types);
 };
 
 }  // namespace torque

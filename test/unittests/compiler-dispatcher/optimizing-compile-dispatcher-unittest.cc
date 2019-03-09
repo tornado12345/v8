@@ -4,6 +4,7 @@
 
 #include "src/compiler-dispatcher/optimizing-compile-dispatcher.h"
 
+#include "src/api-inl.h"
 #include "src/base/atomic-utils.h"
 #include "src/base/platform/semaphore.h"
 #include "src/compiler.h"
@@ -29,9 +30,9 @@ class BlockingCompilationJob : public OptimizedCompilationJob {
       : OptimizedCompilationJob(isolate->stack_guard()->real_climit(), &info_,
                                 "BlockingCompilationJob",
                                 State::kReadyToExecute),
-        shared_(function->shared()),
+        shared_(function->shared(), isolate),
         zone_(isolate->allocator(), ZONE_NAME),
-        info_(&zone_, function->GetIsolate(), shared_, function),
+        info_(&zone_, isolate, shared_, function),
         blocking_(false),
         semaphore_(0) {}
   ~BlockingCompilationJob() override = default;
@@ -72,6 +73,9 @@ TEST_F(OptimizingCompileDispatcherTest, Construct) {
 TEST_F(OptimizingCompileDispatcherTest, NonBlockingFlush) {
   Handle<JSFunction> fun =
       RunJS<JSFunction>("function f() { function g() {}; return g;}; f();");
+  IsCompiledScope is_compiled_scope;
+  ASSERT_TRUE(
+      Compiler::Compile(fun, Compiler::CLEAR_EXCEPTION, &is_compiled_scope));
   BlockingCompilationJob* job = new BlockingCompilationJob(i_isolate(), fun);
 
   OptimizingCompileDispatcher dispatcher(i_isolate());

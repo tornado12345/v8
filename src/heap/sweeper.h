@@ -77,18 +77,7 @@ class Sweeper {
   };
   enum AddPageMode { REGULAR, READD_TEMPORARY_REMOVED_PAGE };
 
-  Sweeper(Heap* heap, MajorNonAtomicMarkingState* marking_state)
-      : heap_(heap),
-        marking_state_(marking_state),
-        num_tasks_(0),
-        pending_sweeper_tasks_semaphore_(0),
-        incremental_sweeper_pending_(false),
-        sweeping_in_progress_(false),
-        num_sweeping_tasks_(0),
-        stop_sweeper_tasks_(false),
-        iterability_task_semaphore_(0),
-        iterability_in_progress_(false),
-        iterability_task_started_(false) {}
+  Sweeper(Heap* heap, MajorNonAtomicMarkingState* marking_state);
 
   bool sweeping_in_progress() const { return sweeping_in_progress_; }
 
@@ -186,9 +175,9 @@ class Sweeper {
   bool sweeping_in_progress_;
   // Counter is actively maintained by the concurrent tasks to avoid querying
   // the semaphore for maintaining a task counter on the main thread.
-  base::AtomicNumber<intptr_t> num_sweeping_tasks_;
+  std::atomic<intptr_t> num_sweeping_tasks_;
   // Used by PauseOrCompleteScope to signal early bailout to tasks.
-  base::AtomicValue<bool> stop_sweeper_tasks_;
+  std::atomic<bool> stop_sweeper_tasks_;
 
   // Pages that are only made iterable but have their free lists ignored.
   IterabilityList iterability_list_;
@@ -196,6 +185,7 @@ class Sweeper {
   base::Semaphore iterability_task_semaphore_;
   bool iterability_in_progress_;
   bool iterability_task_started_;
+  bool should_reduce_memory_;
 };
 
 }  // namespace internal

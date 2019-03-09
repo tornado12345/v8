@@ -5,6 +5,10 @@
 #ifndef V8_ARM64_FRAME_CONSTANTS_ARM64_H_
 #define V8_ARM64_FRAME_CONSTANTS_ARM64_H_
 
+#include "src/base/macros.h"
+#include "src/frame-constants.h"
+#include "src/globals.h"
+
 namespace v8 {
 namespace internal {
 
@@ -31,8 +35,10 @@ namespace internal {
 //
 class EntryFrameConstants : public AllStatic {
  public:
-  static constexpr int kCallerFPOffset = -3 * kPointerSize;
-  static constexpr int kFixedFrameSize = 6 * kPointerSize;
+  // This is the offset to where JSEntry pushes the current value of
+  // Isolate::c_entry_fp onto the stack.
+  static constexpr int kCallerFPOffset = -3 * kSystemPointerSize;
+  static constexpr int kFixedFrameSize = 6 * kSystemPointerSize;
 };
 
 class ExitFrameConstants : public TypedFrameConstants {
@@ -46,6 +52,20 @@ class ExitFrameConstants : public TypedFrameConstants {
   static constexpr int kConstantPoolOffset = 0;  // Not used
 };
 
+class WasmCompileLazyFrameConstants : public TypedFrameConstants {
+ public:
+  static constexpr int kNumberOfSavedGpParamRegs = 8;
+  static constexpr int kNumberOfSavedFpParamRegs = 8;
+
+  // FP-relative.
+  static constexpr int kWasmInstanceOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(1);
+  static constexpr int kFixedFrameSizeFromFp =
+      // Header is padded to 16 byte (see {MacroAssembler::EnterFrame}).
+      RoundUp<16>(TypedFrameConstants::kFixedFrameSizeFromFp) +
+      kNumberOfSavedGpParamRegs * kSystemPointerSize +
+      kNumberOfSavedFpParamRegs * kDoubleSize;
+};
+
 class JavaScriptFrameConstants : public AllStatic {
  public:
   // FP-relative.
@@ -54,7 +74,7 @@ class JavaScriptFrameConstants : public AllStatic {
 
   // There are two words on the stack (saved fp and saved lr) between fp and
   // the arguments.
-  static constexpr int kLastParameterOffset = 2 * kPointerSize;
+  static constexpr int kLastParameterOffset = 2 * kSystemPointerSize;
 
   static constexpr int kFunctionOffset =
       StandardFrameConstants::kFunctionOffset;

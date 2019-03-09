@@ -29,9 +29,10 @@ class SourcePositionTable;
 class BytecodeGraphBuilder {
  public:
   BytecodeGraphBuilder(
-      Zone* local_zone, Handle<SharedFunctionInfo> shared,
-      Handle<FeedbackVector> feedback_vector, BailoutId osr_offset,
-      JSGraph* jsgraph, CallFrequency invocation_frequency,
+      Zone* local_zone, Handle<BytecodeArray> bytecode_array,
+      Handle<SharedFunctionInfo> shared, Handle<FeedbackVector> feedback_vector,
+      BailoutId osr_offset, JSGraph* jsgraph,
+      CallFrequency& invocation_frequency,
       SourcePositionTable* source_positions, Handle<Context> native_context,
       int inlining_id = SourcePosition::kNotInlined,
       JSTypeHintLowering::Flags flags = JSTypeHintLowering::kNoFlags,
@@ -90,6 +91,12 @@ class BytecodeGraphBuilder {
 
   Node* NewNode(const Operator* op, Node* n1, Node* n2, Node* n3, Node* n4) {
     Node* buffer[] = {n1, n2, n3, n4};
+    return MakeNode(op, arraysize(buffer), buffer, false);
+  }
+
+  Node* NewNode(const Operator* op, Node* n1, Node* n2, Node* n3, Node* n4,
+                Node* n5, Node* n6) {
+    Node* buffer[] = {n1, n2, n3, n4, n5, n6};
     return MakeNode(op, arraysize(buffer), buffer, false);
   }
 
@@ -178,7 +185,6 @@ class BytecodeGraphBuilder {
   void BuildBinaryOp(const Operator* op);
   void BuildBinaryOpWithImmediate(const Operator* op);
   void BuildCompareOp(const Operator* op);
-  void BuildTestingOp(const Operator* op);
   void BuildDelete(LanguageMode language_mode);
   void BuildCastOperator(const Operator* op);
   void BuildHoleCheckAndThrow(Node* condition, Runtime::FunctionId runtime_id,
@@ -302,6 +308,7 @@ class BytecodeGraphBuilder {
   CommonOperatorBuilder* common() const { return jsgraph_->common(); }
   Zone* graph_zone() const { return graph()->zone(); }
   JSGraph* jsgraph() const { return jsgraph_; }
+  Isolate* isolate() const { return jsgraph_->isolate(); }
   JSOperatorBuilder* javascript() const { return jsgraph_->javascript(); }
   SimplifiedOperatorBuilder* simplified() const {
     return jsgraph_->simplified();
@@ -364,6 +371,8 @@ class BytecodeGraphBuilder {
     needs_eager_checkpoint_ = value;
   }
 
+  Handle<SharedFunctionInfo> shared_info() const { return shared_info_; }
+
   Handle<Context> native_context() const { return native_context_; }
 
 #define DECLARE_VISIT_BYTECODE(name, ...) void Visit##name();
@@ -424,6 +433,8 @@ class BytecodeGraphBuilder {
   SourcePositionTable* source_positions_;
 
   SourcePosition const start_position_;
+
+  Handle<SharedFunctionInfo> const shared_info_;
 
   // The native context for which we optimize.
   Handle<Context> const native_context_;

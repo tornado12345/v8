@@ -7,7 +7,7 @@
 
 #include "src/base/compiler-specific.h"
 #include "src/globals.h"
-#include "src/handles.h"
+#include "src/maybe-handles.h"
 #include "src/runtime/runtime.h"
 #include "src/type-hints.h"
 #include "src/vector-slot-pair.h"
@@ -16,8 +16,8 @@ namespace v8 {
 namespace internal {
 
 class AllocationSite;
-class BoilerplateDescription;
-class ConstantElementsPair;
+class ObjectBoilerplateDescription;
+class ArrayBoilerplateDescription;
 class FeedbackCell;
 class SharedFunctionInfo;
 
@@ -51,6 +51,8 @@ class CallFrequency final {
   friend size_t hash_value(CallFrequency f) {
     return bit_cast<uint32_t>(f.value_);
   }
+
+  static constexpr float kNoFeedbackCallFrequency = -1;
 
  private:
   float value_;
@@ -160,7 +162,7 @@ CallForwardVarargsParameters const& CallForwardVarargsParametersOf(
 // used as a parameter by JSCall and JSCallWithSpread operators.
 class CallParameters final {
  public:
-  CallParameters(size_t arity, CallFrequency frequency,
+  CallParameters(size_t arity, CallFrequency const& frequency,
                  VectorSlotPair const& feedback,
                  ConvertReceiverMode convert_mode,
                  SpeculationMode speculation_mode)
@@ -171,7 +173,7 @@ class CallParameters final {
         feedback_(feedback) {}
 
   size_t arity() const { return ArityField::decode(bit_field_); }
-  CallFrequency frequency() const { return frequency_; }
+  CallFrequency const& frequency() const { return frequency_; }
   ConvertReceiverMode convert_mode() const {
     return ConvertReceiverModeField::decode(bit_field_);
   }
@@ -457,15 +459,15 @@ CreateArgumentsType const& CreateArgumentsTypeOf(const Operator* op);
 // used as parameter by JSCreateArray operators.
 class CreateArrayParameters final {
  public:
-  explicit CreateArrayParameters(size_t arity, Handle<AllocationSite> site)
+  explicit CreateArrayParameters(size_t arity, MaybeHandle<AllocationSite> site)
       : arity_(arity), site_(site) {}
 
   size_t arity() const { return arity_; }
-  Handle<AllocationSite> site() const { return site_; }
+  MaybeHandle<AllocationSite> site() const { return site_; }
 
  private:
   size_t const arity_;
-  Handle<AllocationSite> const site_;
+  MaybeHandle<AllocationSite> const site_;
 };
 
 bool operator==(CreateArrayParameters const&, CreateArrayParameters const&);
@@ -626,6 +628,28 @@ std::ostream& operator<<(std::ostream&, CreateLiteralParameters const&);
 
 const CreateLiteralParameters& CreateLiteralParametersOf(const Operator* op);
 
+class CloneObjectParameters final {
+ public:
+  CloneObjectParameters(VectorSlotPair const& feedback, int flags)
+      : feedback_(feedback), flags_(flags) {}
+
+  VectorSlotPair const& feedback() const { return feedback_; }
+  int flags() const { return flags_; }
+
+ private:
+  VectorSlotPair const feedback_;
+  int const flags_;
+};
+
+bool operator==(CloneObjectParameters const&, CloneObjectParameters const&);
+bool operator!=(CloneObjectParameters const&, CloneObjectParameters const&);
+
+size_t hash_value(CloneObjectParameters const&);
+
+std::ostream& operator<<(std::ostream&, CloneObjectParameters const&);
+
+const CloneObjectParameters& CloneObjectParametersOf(const Operator* op);
+
 // Descriptor used by the JSForInPrepare and JSForInNext opcodes.
 enum class ForInMode : uint8_t {
   kUseEnumCacheKeysAndIndices,
@@ -643,7 +667,9 @@ BinaryOperationHint BinaryOperationHintOf(const Operator* op);
 
 CompareOperationHint CompareOperationHintOf(const Operator* op);
 
-int GeneratorStoreRegisterCountOf(const Operator* op) V8_WARN_UNUSED_RESULT;
+int RegisterCountOf(Operator const* op) V8_WARN_UNUSED_RESULT;
+
+int GeneratorStoreValueCountOf(const Operator* op) V8_WARN_UNUSED_RESULT;
 int RestoreRegisterIndexOf(const Operator* op) V8_WARN_UNUSED_RESULT;
 
 Handle<ScopeInfo> ScopeInfoOf(const Operator* op) V8_WARN_UNUSED_RESULT;
@@ -681,18 +707,19 @@ class V8_EXPORT_PRIVATE JSOperatorBuilder final
   const Operator* Increment();
   const Operator* Negate();
 
-  const Operator* ToInteger();
   const Operator* ToLength();
   const Operator* ToName();
   const Operator* ToNumber();
+  const Operator* ToNumberConvertBigInt();
   const Operator* ToNumeric();
   const Operator* ToObject();
   const Operator* ToString();
 
   const Operator* Create();
   const Operator* CreateArguments(CreateArgumentsType type);
-  const Operator* CreateArray(size_t arity, Handle<AllocationSite> site);
+  const Operator* CreateArray(size_t arity, MaybeHandle<AllocationSite> site);
   const Operator* CreateArrayIterator(IterationKind);
+  const Operator* CreateAsyncFunctionObject(int register_count);
   const Operator* CreateCollectionIterator(CollectionKind, IterationKind);
   const Operator* CreateBoundFunction(size_t arity, Handle<Map> map);
   const Operator* CreateClosure(Handle<SharedFunctionInfo> shared_info,
@@ -705,29 +732,33 @@ class V8_EXPORT_PRIVATE JSOperatorBuilder final
   const Operator* CreateObject();
   const Operator* CreatePromise();
   const Operator* CreateTypedArray();
-  const Operator* CreateLiteralArray(Handle<ConstantElementsPair> constant,
-                                     VectorSlotPair const& feedback,
-                                     int literal_flags, int number_of_elements);
+  const Operator* CreateLiteralArray(
+      Handle<ArrayBoilerplateDescription> constant,
+      VectorSlotPair const& feedback, int literal_flags,
+      int number_of_elements);
   const Operator* CreateEmptyLiteralArray(VectorSlotPair const& feedback);
+  const Operator* CreateArrayFromIterable();
   const Operator* CreateEmptyLiteralObject();
 
-  const Operator* CreateLiteralObject(Handle<BoilerplateDescription> constant,
-                                      VectorSlotPair const& feedback,
-                                      int literal_flags,
-                                      int number_of_properties);
+  const Operator* CreateLiteralObject(
+      Handle<ObjectBoilerplateDescription> constant,
+      VectorSlotPair const& feedback, int literal_flags,
+      int number_of_properties);
+  const Operator* CloneObject(VectorSlotPair const& feedback,
+                              int literal_flags);
   const Operator* CreateLiteralRegExp(Handle<String> constant_pattern,
                                       VectorSlotPair const& feedback,
                                       int literal_flags);
 
   const Operator* CallForwardVarargs(size_t arity, uint32_t start_index);
   const Operator* Call(
-      size_t arity, CallFrequency frequency = CallFrequency(),
+      size_t arity, CallFrequency const& frequency = CallFrequency(),
       VectorSlotPair const& feedback = VectorSlotPair(),
       ConvertReceiverMode convert_mode = ConvertReceiverMode::kAny,
       SpeculationMode speculation_mode = SpeculationMode::kDisallowSpeculation);
   const Operator* CallWithArrayLike(CallFrequency frequency);
   const Operator* CallWithSpread(
-      uint32_t arity, CallFrequency frequency = CallFrequency(),
+      uint32_t arity, CallFrequency const& frequency = CallFrequency(),
       VectorSlotPair const& feedback = VectorSlotPair(),
       SpeculationMode speculation_mode = SpeculationMode::kDisallowSpeculation);
   const Operator* CallRuntime(Runtime::FunctionId id);
@@ -758,7 +789,7 @@ class V8_EXPORT_PRIVATE JSOperatorBuilder final
 
   const Operator* DeleteProperty();
 
-  const Operator* HasProperty();
+  const Operator* HasProperty(VectorSlotPair const& feedback);
 
   const Operator* GetSuperConstructor();
 
@@ -781,6 +812,10 @@ class V8_EXPORT_PRIVATE JSOperatorBuilder final
   const Operator* InstanceOf(const VectorSlotPair& feedback);
   const Operator* OrdinaryHasInstance();
 
+  const Operator* AsyncFunctionEnter();
+  const Operator* AsyncFunctionReject();
+  const Operator* AsyncFunctionResolve();
+
   const Operator* ForInEnumerate();
   const Operator* ForInNext(ForInMode);
   const Operator* ForInPrepare(ForInMode);
@@ -789,7 +824,7 @@ class V8_EXPORT_PRIVATE JSOperatorBuilder final
   const Operator* StoreMessage();
 
   // Used to implement Ignition's SuspendGenerator bytecode.
-  const Operator* GeneratorStore(int register_count);
+  const Operator* GeneratorStore(int value_count);
 
   // Used to implement Ignition's SwitchOnGeneratorState bytecode.
   const Operator* GeneratorRestoreContinuation();
@@ -816,6 +851,7 @@ class V8_EXPORT_PRIVATE JSOperatorBuilder final
 
   const Operator* ObjectIsArray();
   const Operator* ParseInt();
+  const Operator* RegExpTest();
 
  private:
   Zone* zone() const { return zone_; }

@@ -22,7 +22,7 @@ class CodeAssemblerTester {
   explicit CodeAssemblerTester(Isolate* isolate, const char* name = "test")
       : zone_(isolate->allocator(), ZONE_NAME),
         scope_(isolate),
-        state_(isolate, &zone_, VoidDescriptor(isolate), Code::STUB, name,
+        state_(isolate, &zone_, VoidDescriptor{}, Code::STUB, name,
                PoisoningMitigationLevel::kDontPoison) {}
 
   // Test generating code for a JS function (e.g. builtins).
@@ -46,7 +46,7 @@ class CodeAssemblerTester {
       : zone_(isolate->allocator(), ZONE_NAME),
         scope_(isolate),
         state_(isolate, &zone_, call_descriptor, Code::STUB, name,
-               PoisoningMitigationLevel::kDontPoison, 0, -1) {}
+               PoisoningMitigationLevel::kDontPoison, Builtins::kNoBuiltinId) {}
 
   CodeAssemblerState* state() { return &state_; }
 
@@ -55,7 +55,16 @@ class CodeAssemblerTester {
     return state_.raw_assembler_.get();
   }
 
-  Handle<Code> GenerateCode() { return CodeAssembler::GenerateCode(&state_); }
+  Handle<Code> GenerateCode() {
+    return GenerateCode(AssemblerOptions::Default(scope_.isolate()));
+  }
+
+  Handle<Code> GenerateCode(const AssemblerOptions& options) {
+    if (state_.InsideBlock()) {
+      CodeAssembler(&state_).Unreachable();
+    }
+    return CodeAssembler::GenerateCode(&state_, options);
+  }
 
   Handle<Code> GenerateCodeCloseAndEscape() {
     return scope_.CloseAndEscape(GenerateCode());

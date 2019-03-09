@@ -52,6 +52,8 @@ enum class MachineSemantic : uint8_t {
 
 V8_EXPORT_PRIVATE inline int ElementSizeLog2Of(MachineRepresentation rep);
 
+V8_EXPORT_PRIVATE inline int ElementSizeInBytes(MachineRepresentation rep);
+
 class MachineType {
  public:
   constexpr MachineType()
@@ -92,15 +94,21 @@ class MachineType {
            representation() == MachineRepresentation::kTaggedSigned ||
            representation() == MachineRepresentation::kTagged;
   }
+  constexpr bool IsTaggedSigned() const {
+    return representation() == MachineRepresentation::kTaggedSigned;
+  }
+  constexpr bool IsTaggedPointer() const {
+    return representation() == MachineRepresentation::kTaggedPointer;
+  }
   constexpr static MachineRepresentation PointerRepresentation() {
-    return (kPointerSize == 4) ? MachineRepresentation::kWord32
-                               : MachineRepresentation::kWord64;
+    return (kSystemPointerSize == 4) ? MachineRepresentation::kWord32
+                                     : MachineRepresentation::kWord64;
   }
   constexpr static MachineType UintPtr() {
-    return (kPointerSize == 4) ? Uint32() : Uint64();
+    return (kSystemPointerSize == 4) ? Uint32() : Uint64();
   }
   constexpr static MachineType IntPtr() {
-    return (kPointerSize == 4) ? Int32() : Int64();
+    return (kSystemPointerSize == 4) ? Int32() : Int64();
   }
   constexpr static MachineType Int8() {
     return MachineType(MachineRepresentation::kWord8, MachineSemantic::kInt32);
@@ -226,7 +234,7 @@ class MachineType {
   }
 
   bool LessThanOrEqualPointerSize() {
-    return ElementSizeLog2Of(this->representation()) <= kPointerSizeLog2;
+    return ElementSizeLog2Of(this->representation()) <= kSystemPointerSizeLog2;
   }
 
  private:
@@ -285,11 +293,21 @@ V8_EXPORT_PRIVATE inline int ElementSizeLog2Of(MachineRepresentation rep) {
     case MachineRepresentation::kTaggedSigned:
     case MachineRepresentation::kTaggedPointer:
     case MachineRepresentation::kTagged:
-      return kPointerSizeLog2;
+      return kTaggedSizeLog2;
     default:
       break;
   }
   UNREACHABLE();
+}
+
+V8_EXPORT_PRIVATE inline int ElementSizeInBytes(MachineRepresentation rep) {
+  return 1 << ElementSizeLog2Of(rep);
+}
+
+// Converts representation to bit for representation masks.
+V8_EXPORT_PRIVATE inline constexpr int RepresentationBit(
+    MachineRepresentation rep) {
+  return 1 << static_cast<int>(rep);
 }
 
 }  // namespace internal

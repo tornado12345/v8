@@ -5,13 +5,13 @@
 #ifndef V8_COMPILER_MACHINE_GRAPH_H_
 #define V8_COMPILER_MACHINE_GRAPH_H_
 
-#include "src/assembler.h"
 #include "src/base/compiler-specific.h"
 #include "src/compiler/common-node-cache.h"
 #include "src/compiler/common-operator.h"
 #include "src/compiler/graph.h"
 #include "src/compiler/machine-operator.h"
 #include "src/globals.h"
+#include "src/runtime/runtime.h"
 
 namespace v8 {
 namespace internal {
@@ -65,6 +65,11 @@ class V8_EXPORT_PRIVATE MachineGraph : public NON_EXPORTED_BASE(ZoneObject) {
   Node* ExternalConstant(ExternalReference ref);
   Node* ExternalConstant(Runtime::FunctionId function_id);
 
+  // Global cache of the dead node.
+  Node* Dead() {
+    return Dead_ ? Dead_ : Dead_ = graph_->NewNode(common_->Dead());
+  }
+
   CommonOperatorBuilder* common() const { return common_; }
   MachineOperatorBuilder* machine() const { return machine_; }
   Graph* graph() const { return graph_; }
@@ -75,6 +80,7 @@ class V8_EXPORT_PRIVATE MachineGraph : public NON_EXPORTED_BASE(ZoneObject) {
   CommonOperatorBuilder* common_;
   MachineOperatorBuilder* machine_;
   CommonNodeCache cache_;
+  Node* Dead_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(MachineGraph);
 };

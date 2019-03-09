@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/compiler/code-generator.h"
+#include "src/compiler/backend/code-generator.h"
+#include "src/compiler/backend/instruction.h"
 #include "src/compiler/common-operator.h"
 #include "src/compiler/graph.h"
-#include "src/compiler/instruction.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node.h"
@@ -79,6 +79,11 @@ class InstructionTester : public HandleAndZoneScope {
   int NewInstr() {
     InstructionCode opcode = static_cast<InstructionCode>(110);
     TestInstr* instr = TestInstr::New(zone(), opcode);
+    return code->AddInstruction(instr);
+  }
+
+  int NewNop() {
+    TestInstr* instr = TestInstr::New(zone(), kArchNop);
     return code->AddInstruction(instr);
   }
 
@@ -163,6 +168,7 @@ TEST(InstructionGetBasicBlock) {
   int i8 = R.NewInstr();
   R.code->EndBlock(R.RpoFor(b2));
   R.code->StartBlock(R.RpoFor(b3));
+  R.NewNop();
   R.code->EndBlock(R.RpoFor(b3));
 
   CHECK_EQ(b0, R.GetBasicBlock(i0));

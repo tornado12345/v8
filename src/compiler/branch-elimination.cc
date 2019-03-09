@@ -21,7 +21,7 @@ BranchElimination::BranchElimination(Editor* editor, JSGraph* js_graph,
       zone_(zone),
       dead_(js_graph->Dead()) {}
 
-BranchElimination::~BranchElimination() {}
+BranchElimination::~BranchElimination() = default;
 
 
 Reduction BranchElimination::Reduce(Node* node) {
@@ -247,13 +247,15 @@ bool BranchElimination::ControlPathConditions::LookupCondition(
     }
   }
   return false;
-  }
+}
 
-  Graph* BranchElimination::graph() const { return jsgraph()->graph(); }
+Graph* BranchElimination::graph() const { return jsgraph()->graph(); }
 
-  CommonOperatorBuilder* BranchElimination::common() const {
-    return jsgraph()->common();
-  }
+Isolate* BranchElimination::isolate() const { return jsgraph()->isolate(); }
+
+CommonOperatorBuilder* BranchElimination::common() const {
+  return jsgraph()->common();
+}
 
 }  // namespace compiler
 }  // namespace internal

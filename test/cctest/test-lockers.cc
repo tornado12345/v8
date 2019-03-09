@@ -31,7 +31,6 @@
 
 #include "src/v8.h"
 
-#include "src/api.h"
 #include "src/base/platform/platform.h"
 #include "src/compilation-cache.h"
 #include "src/execution.h"
@@ -52,7 +51,7 @@ class DeoptimizeCodeThread : public v8::base::Thread {
         context_(isolate, context),
         source_(trigger) {}
 
-  void Run() {
+  void Run() override {
     v8::Locker locker(isolate_);
     isolate_->Enter();
     v8::HandleScope handle_scope(isolate_);
@@ -291,7 +290,7 @@ class KangarooThread : public v8::base::Thread {
         isolate_(isolate),
         context_(isolate, context) {}
 
-  void Run() {
+  void Run() override {
     {
       v8::Locker locker(isolate_);
       v8::Isolate::Scope isolate_scope(isolate_);
@@ -363,7 +362,7 @@ class JoinableThread {
       thread_(this) {
   }
 
-  virtual ~JoinableThread() {}
+  virtual ~JoinableThread() = default;
 
   void Start() {
     thread_.Start();
@@ -383,7 +382,7 @@ class JoinableThread {
         : Thread(Options(joinable_thread->name_)),
           joinable_thread_(joinable_thread) {}
 
-    virtual void Run() {
+    void Run() override {
       joinable_thread_->Run();
       joinable_thread_->semaphore_.Signal();
     }
@@ -409,7 +408,7 @@ class IsolateLockingThreadWithLocalContext : public JoinableThread {
       isolate_(isolate) {
   }
 
-  virtual void Run() {
+  void Run() override {
     v8::Locker locker(isolate_);
     v8::Isolate::Scope isolate_scope(isolate_);
     v8::HandleScope handle_scope(isolate_);
@@ -461,7 +460,7 @@ class IsolateNestedLockingThread : public JoinableThread {
   explicit IsolateNestedLockingThread(v8::Isolate* isolate)
     : JoinableThread("IsolateNestedLocking"), isolate_(isolate) {
   }
-  virtual void Run() {
+  void Run() override {
     v8::Locker lock(isolate_);
     v8::Isolate::Scope isolate_scope(isolate_);
     v8::HandleScope handle_scope(isolate_);
@@ -509,7 +508,7 @@ class SeparateIsolatesLocksNonexclusiveThread : public JoinableThread {
       isolate1_(isolate1), isolate2_(isolate2) {
   }
 
-  virtual void Run() {
+  void Run() override {
     v8::Locker lock(isolate1_);
     v8::Isolate::Scope isolate_scope(isolate1_);
     v8::HandleScope handle_scope(isolate1_);
@@ -557,7 +556,7 @@ class LockIsolateAndCalculateFibSharedContextThread : public JoinableThread {
         isolate_(isolate),
         context_(isolate, context) {}
 
-  virtual void Run() {
+  void Run() override {
     v8::Locker lock(isolate_);
     v8::Isolate::Scope isolate_scope(isolate_);
     v8::HandleScope handle_scope(isolate_);
@@ -578,7 +577,7 @@ class LockerUnlockerThread : public JoinableThread {
       isolate_(isolate) {
   }
 
-  virtual void Run() {
+  void Run() override {
     isolate_->DiscardThreadSpecificMetadata();  // No-op
     {
       v8::Locker lock(isolate_);
@@ -638,7 +637,7 @@ class LockTwiceAndUnlockThread : public JoinableThread {
       isolate_(isolate) {
   }
 
-  virtual void Run() {
+  void Run() override {
     v8::Locker lock(isolate_);
     v8::Isolate::Scope isolate_scope(isolate_);
     v8::HandleScope handle_scope(isolate_);
@@ -698,7 +697,7 @@ class LockAndUnlockDifferentIsolatesThread : public JoinableThread {
       isolate2_(isolate2) {
   }
 
-  virtual void Run() {
+  void Run() override {
     std::unique_ptr<LockIsolateAndCalculateFibSharedContextThread> thread;
     v8::Locker lock1(isolate1_);
     CHECK(v8::Locker::IsLocked(isolate1_));
@@ -761,7 +760,7 @@ class LockUnlockLockThread : public JoinableThread {
         isolate_(isolate),
         context_(isolate, context) {}
 
-  virtual void Run() {
+  void Run() override {
     v8::Locker lock1(isolate_);
     CHECK(v8::Locker::IsLocked(isolate_));
     CHECK(!v8::Locker::IsLocked(CcTest::isolate()));
@@ -828,7 +827,7 @@ class LockUnlockLockDefaultIsolateThread : public JoinableThread {
       : JoinableThread("LockUnlockLockDefaultIsolateThread"),
         context_(CcTest::isolate(), context) {}
 
-  virtual void Run() {
+  void Run() override {
     v8::Locker lock1(CcTest::isolate());
     {
       v8::Isolate::Scope isolate_scope(CcTest::isolate());
@@ -915,7 +914,7 @@ class IsolateGenesisThread : public JoinableThread {
       extension_names_(extension_names)
   {}
 
-  virtual void Run() {
+  void Run() override {
     v8::Isolate::CreateParams create_params;
     create_params.array_buffer_allocator = CcTest::array_buffer_allocator();
     v8::Isolate* isolate = v8::Isolate::New(create_params);
@@ -939,32 +938,17 @@ class IsolateGenesisThread : public JoinableThread {
 TEST(ExtensionsRegistration) {
 #if V8_TARGET_ARCH_ARM || V8_TARGET_ARCH_MIPS
   const int kNThreads = 10;
-#elif V8_TARGET_ARCH_X64 && V8_TARGET_ARCH_32_BIT
-  const int kNThreads = 4;
 #elif V8_TARGET_ARCH_S390 && V8_TARGET_ARCH_32_BIT
   const int kNThreads = 10;
 #else
   const int kNThreads = 40;
 #endif
-  v8::RegisterExtension(new v8::Extension("test0",
-                                          kSimpleExtensionSource));
-  v8::RegisterExtension(new v8::Extension("test1",
-                                          kSimpleExtensionSource));
-  v8::RegisterExtension(new v8::Extension("test2",
-                                          kSimpleExtensionSource));
-  v8::RegisterExtension(new v8::Extension("test3",
-                                          kSimpleExtensionSource));
-  v8::RegisterExtension(new v8::Extension("test4",
-                                          kSimpleExtensionSource));
-  v8::RegisterExtension(new v8::Extension("test5",
-                                          kSimpleExtensionSource));
-  v8::RegisterExtension(new v8::Extension("test6",
-                                          kSimpleExtensionSource));
-  v8::RegisterExtension(new v8::Extension("test7",
-                                          kSimpleExtensionSource));
-  const char* extension_names[] = { "test0", "test1",
-                                    "test2", "test3", "test4",
-                                    "test5", "test6", "test7" };
+  const char* extension_names[] = {"test0", "test1", "test2", "test3",
+                                   "test4", "test5", "test6", "test7"};
+  for (const char* name : extension_names) {
+    v8::RegisterExtension(
+        v8::base::make_unique<v8::Extension>(name, kSimpleExtensionSource));
+  }
   std::vector<JoinableThread*> threads;
   threads.reserve(kNThreads);
   for (int i = 0; i < kNThreads; i++) {

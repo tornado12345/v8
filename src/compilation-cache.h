@@ -26,7 +26,7 @@ class CompilationSubCache {
   CompilationSubCache(Isolate* isolate, int generations)
       : isolate_(isolate),
         generations_(generations) {
-    tables_ = NewArray<Object*>(generations);
+    tables_ = NewArray<Object>(generations);
   }
 
   ~CompilationSubCache() { DeleteArray(tables_); }
@@ -68,7 +68,7 @@ class CompilationSubCache {
  private:
   Isolate* isolate_;
   int generations_;  // Number of generations.
-  Object** tables_;  // Compilation cache tables - one for each generation.
+  Object* tables_;   // Compilation cache tables - one for each generation.
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(CompilationSubCache);
 };
@@ -213,16 +213,16 @@ class CompilationCache {
 
  private:
   explicit CompilationCache(Isolate* isolate);
-  ~CompilationCache();
+  ~CompilationCache() = default;
 
   base::HashMap* EagerOptimizingSet();
 
   // The number of sub caches covering the different types to cache.
   static const int kSubCacheCount = 4;
 
-  bool IsEnabled() { return FLAG_compilation_cache && enabled_; }
+  bool IsEnabled() const { return FLAG_compilation_cache && enabled_; }
 
-  Isolate* isolate() { return isolate_; }
+  Isolate* isolate() const { return isolate_; }
 
   Isolate* isolate_;
 

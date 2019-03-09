@@ -71,7 +71,7 @@ class V8_EXPORT_PRIVATE GCTracer {
           NUMBER_OF_SCOPES,
 
       FIRST_INCREMENTAL_SCOPE = MC_INCREMENTAL,
-      LAST_INCREMENTAL_SCOPE = MC_INCREMENTAL_EXTERNAL_PROLOGUE,
+      LAST_INCREMENTAL_SCOPE = MC_INCREMENTAL_SWEEPING,
       FIRST_SCOPE = MC_INCREMENTAL,
       NUMBER_OF_INCREMENTAL_SCOPES =
           LAST_INCREMENTAL_SCOPE - FIRST_INCREMENTAL_SCOPE + 1,
@@ -79,6 +79,8 @@ class V8_EXPORT_PRIVATE GCTracer {
       LAST_GENERAL_BACKGROUND_SCOPE = BACKGROUND_UNMAPPER,
       FIRST_MC_BACKGROUND_SCOPE = MC_BACKGROUND_EVACUATE_COPY,
       LAST_MC_BACKGROUND_SCOPE = MC_BACKGROUND_SWEEPING,
+      FIRST_TOP_MC_SCOPE = MC_CLEAR,
+      LAST_TOP_MC_SCOPE = MC_SWEEP,
       FIRST_MINOR_GC_BACKGROUND_SCOPE = MINOR_MC_BACKGROUND_EVACUATE_COPY,
       LAST_MINOR_GC_BACKGROUND_SCOPE = SCAVENGER_BACKGROUND_SCAVENGE_PARALLEL
     };
@@ -177,11 +179,11 @@ class V8_EXPORT_PRIVATE GCTracer {
     // after the current GC.
     size_t end_holes_size;
 
-    // Size of new space objects in constructor.
-    size_t new_space_object_size;
+    // Size of young objects in constructor.
+    size_t young_object_size;
 
-    // Size of survived new space objects in destructor.
-    size_t survived_new_space_object_size;
+    // Size of survived young objects in destructor.
+    size_t survived_young_object_size;
 
     // Bytes marked incrementally for INCREMENTAL_MARK_COMPACTOR
     size_t incremental_marking_bytes;
@@ -319,6 +321,8 @@ class V8_EXPORT_PRIVATE GCTracer {
   void AddBackgroundScopeSample(BackgroundScope::ScopeId scope, double duration,
                                 RuntimeCallCounter* runtime_call_counter);
 
+  void RecordGCPhasesHistograms(TimedHistogram* gc_timer);
+
  private:
   FRIEND_TEST(GCTracer, AverageSpeed);
   FRIEND_TEST(GCTracerTest, AllocationThroughput);
@@ -334,6 +338,9 @@ class V8_EXPORT_PRIVATE GCTracer {
   FRIEND_TEST(GCTracerTest, IncrementalScope);
   FRIEND_TEST(GCTracerTest, IncrementalMarkingSpeed);
   FRIEND_TEST(GCTracerTest, MutatorUtilization);
+  FRIEND_TEST(GCTracerTest, RecordGCSumHistograms);
+  FRIEND_TEST(GCTracerTest, RecordMarkCompactHistograms);
+  FRIEND_TEST(GCTracerTest, RecordScavengerHistograms);
 
   struct BackgroundCounter {
     double total_duration_ms;
@@ -352,6 +359,11 @@ class V8_EXPORT_PRIVATE GCTracer {
   void RecordIncrementalMarkingSpeed(size_t bytes, double duration);
   void RecordMutatorUtilization(double mark_compactor_end_time,
                                 double mark_compactor_duration);
+
+  // Overall time spent in mark compact within a given GC cycle. Exact
+  // accounting of events within a GC is not necessary which is why the
+  // recording takes place at the end of the atomic pause.
+  void RecordGCSumCounters(double atomic_pause_duration);
 
   // Print one detailed trace line in name=value format.
   // TODO(ernstm): Move to Heap.
