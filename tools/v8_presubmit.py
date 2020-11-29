@@ -29,6 +29,7 @@
 
 
 # for py2/py3 compatibility
+from __future__ import absolute_import
 from __future__ import print_function
 
 try:
@@ -59,6 +60,9 @@ from testrunner.local import utils
 #   We now run our own header guard check in PRESUBMIT.py.
 # build/include_what_you_use: Started giving false positives for variables
 #   named "string" and "map" assuming that you needed to include STL headers.
+# runtime/references: As of May 2020 the C++ style guide suggests using
+#   references for out parameters, see
+#   https://google.github.io/styleguide/cppguide.html#Inputs_and_Outputs.
 
 LINT_RULES = """
 -build/header_guard
@@ -126,6 +130,39 @@ def TorqueLintWorker(command):
   except:
     print('Error running format-torque.py')
     process.kill()
+
+def JSLintWorker(command):
+  def format_file(command):
+    try:
+      file_name = command[-1]
+      with open(file_name, "r") as file_handle:
+        contents = file_handle.read()
+
+      process = subprocess.Popen(command, stdout=PIPE, stderr=subprocess.PIPE)
+      output, err = process.communicate()
+      rc = process.returncode
+      if rc != 0:
+        sys.stdout.write("error code " + str(rc) + " running clang-format.\n")
+        return rc
+
+      if output != contents:
+        return 1
+
+      return 0
+    except KeyboardInterrupt:
+      process.kill()
+    except Exception:
+      print('Error running clang-format. Please make sure you have depot_tools' +
+            ' in your $PATH. Lint check skipped.')
+      process.kill()
+
+  rc = format_file(command)
+  if rc == 1:
+    # There are files that need to be formatted, let's format them in place.
+    file_name = command[-1]
+    sys.stdout.write("Formatting %s.\n" % (file_name))
+    rc = format_file(command[:-1] + ["-i", file_name])
+  return rc
 
 class FileContentsCache(object):
 
@@ -326,7 +363,13 @@ class CppLintProcessor(CacheableSourceFileProcessor):
     return (super(CppLintProcessor, self).IgnoreDir(name)
             or (name == 'third_party'))
 
-  IGNORE_LINT = ['export-template.h', 'flag-definitions.h']
+  IGNORE_LINT = [
+    'export-template.h',
+    'flag-definitions.h',
+    'gay-fixed.cc',
+    'gay-precision.cc',
+    'gay-shortest.cc',
+  ]
 
   def IgnoreFile(self, name):
     return (super(CppLintProcessor, self).IgnoreFile(name)
@@ -366,7 +409,7 @@ class TorqueLintProcessor(CacheableSourceFileProcessor):
     return name.endswith('.tq')
 
   def GetPathsToSearch(self):
-    dirs = ['third-party', 'src']
+    dirs = ['third_party', 'src']
     test_dirs = ['torque']
     return dirs + [join('test', dir) for dir in test_dirs]
 
@@ -382,8 +425,35 @@ class TorqueLintProcessor(CacheableSourceFileProcessor):
 
     return None, arguments
 
+class JSLintProcessor(CacheableSourceFileProcessor):
+  """
+  Check .{m}js file to verify they follow the JS Style guide.
+  """
+  def __init__(self, use_cache=True):
+    super(JSLintProcessor, self).__init__(
+      use_cache=use_cache, cache_file_path='.jslint-cache',
+      file_type='JavaScript')
+
+  def IsRelevant(self, name):
+    return name.endswith('.js') or name.endswith('.mjs')
+
+  def GetPathsToSearch(self):
+    return ['tools/system-analyzer']
+
+  def GetProcessorWorker(self):
+    return JSLintWorker
+
+  def GetProcessorScript(self):
+    for path in [TOOLS_PATH] + os.environ["PATH"].split(os.pathsep):
+      path = path.strip('"')
+      clang_format = os.path.join(path, 'clang_format.py')
+      if os.path.isfile(clang_format):
+        return clang_format, []
+
+    return None, []
+
 COPYRIGHT_HEADER_PATTERN = re.compile(
-    r'Copyright [\d-]*20[0-1][0-9] the V8 project authors. All rights reserved.')
+    r'Copyright [\d-]*20[0-2][0-9] the V8 project authors. All rights reserved.')
 
 class SourceProcessor(SourceFileProcessor):
   """
@@ -476,7 +546,10 @@ class SourceProcessor(SourceFileProcessor):
                        'zlib.js']
   IGNORE_TABS = IGNORE_COPYRIGHTS + ['unicode-test.js', 'html-comments.js']
 
-  IGNORE_COPYRIGHTS_DIRECTORY = "test/test262/local-tests"
+  IGNORE_COPYRIGHTS_DIRECTORIES = [
+      "test/test262/local-tests",
+      "test/mjsunit/wasm/bulk-memory-spec",
+  ]
 
   def EndOfDeclaration(self, line):
     return line == "}" or line == "};"
@@ -494,7 +567,8 @@ class SourceProcessor(SourceFileProcessor):
         print("%s contains tabs" % name)
         result = False
     if not base in SourceProcessor.IGNORE_COPYRIGHTS and \
-        not SourceProcessor.IGNORE_COPYRIGHTS_DIRECTORY in name:
+        not any(ignore_dir in name for ignore_dir
+                in SourceProcessor.IGNORE_COPYRIGHTS_DIRECTORIES):
       if not COPYRIGHT_HEADER_PATTERN.search(contents):
         print("%s is missing a correct copyright header." % name)
         result = False
@@ -517,12 +591,13 @@ class SourceProcessor(SourceFileProcessor):
       print("%s does not end with a single new line." % name)
       result = False
     # Sanitize flags for fuzzer.
-    if ".js" in name and ("mjsunit" in name or "debugger" in name):
+    if (".js" in name or ".mjs" in name) and ("mjsunit" in name or "debugger" in name):
       match = FLAGS_LINE.search(contents)
       if match:
         print("%s Flags should use '-' (not '_')" % name)
         result = False
-      if not "mjsunit/mjsunit.js" in name:
+      if (not "mjsunit/mjsunit.js" in name and
+          not "mjsunit/mjsunit_numfuzz.js" in name):
         if ASSERT_OPTIMIZED_PATTERN.search(contents) and \
             not FLAGS_ENABLE_OPT.search(contents):
           print("%s Flag --opt should be set if " \
@@ -658,6 +733,7 @@ def PyTests(workspace):
       join(workspace, 'tools', 'clusterfuzz', 'v8_foozzie_test.py'),
       join(workspace, 'tools', 'release', 'test_scripts.py'),
       join(workspace, 'tools', 'unittests', 'run_tests_test.py'),
+      join(workspace, 'tools', 'unittests', 'run_perf_test.py'),
       join(workspace, 'tools', 'testrunner', 'testproc', 'variant_unittest.py'),
     ]:
     print('Running ' + script)
@@ -691,6 +767,9 @@ def Main():
 
   print("Running Torque formatting check...")
   success &= TorqueLintProcessor(use_cache=use_linter_cache).RunOnPath(
+    workspace)
+  print("Running JavaScript formatting check...")
+  success &= JSLintProcessor(use_cache=use_linter_cache).RunOnPath(
     workspace)
   print("Running copyright header, trailing whitespaces and " \
         "two empty lines between declarations check...")

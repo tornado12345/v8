@@ -5,14 +5,15 @@
 #ifndef V8_REGEXP_MIPS64_REGEXP_MACRO_ASSEMBLER_MIPS64_H_
 #define V8_REGEXP_MIPS64_REGEXP_MACRO_ASSEMBLER_MIPS64_H_
 
-#include "src/macro-assembler.h"
-#include "src/mips64/assembler-mips64.h"
+#include "src/codegen/macro-assembler.h"
+#include "src/codegen/mips64/assembler-mips64.h"
 #include "src/regexp/regexp-macro-assembler.h"
 
 namespace v8 {
 namespace internal {
 
-class RegExpMacroAssemblerMIPS: public NativeRegExpMacroAssembler {
+class V8_EXPORT_PRIVATE RegExpMacroAssemblerMIPS
+    : public NativeRegExpMacroAssembler {
  public:
   RegExpMacroAssemblerMIPS(Isolate* isolate, Zone* zone, Mode mode,
                            int registers_to_save);
@@ -22,7 +23,7 @@ class RegExpMacroAssemblerMIPS: public NativeRegExpMacroAssembler {
   virtual void AdvanceRegister(int reg, int by);
   virtual void Backtrack();
   virtual void Bind(Label* label);
-  virtual void CheckAtStart(Label* on_at_start);
+  virtual void CheckAtStart(int cp_offset, Label* on_at_start);
   virtual void CheckCharacter(uint32_t c, Label* on_equal);
   virtual void CheckCharacterAfterAnd(uint32_t c,
                                       uint32_t mask,
@@ -66,10 +67,8 @@ class RegExpMacroAssemblerMIPS: public NativeRegExpMacroAssembler {
   virtual void IfRegisterLT(int reg, int comparand, Label* if_lt);
   virtual void IfRegisterEqPos(int reg, Label* if_eq);
   virtual IrregexpImplementation Implementation();
-  virtual void LoadCurrentCharacter(int cp_offset,
-                                    Label* on_end_of_input,
-                                    bool check_bounds = true,
-                                    int characters = 1);
+  virtual void LoadCurrentCharacterUnchecked(int cp_offset,
+                                             int character_count);
   virtual void PopCurrentPosition();
   virtual void PopRegister(int register_index);
   virtual void PushBacktrack(Label* label);
@@ -126,15 +125,12 @@ class RegExpMacroAssemblerMIPS: public NativeRegExpMacroAssembler {
   // the frame in GetCode.
   static const int kSuccessfulCaptures = kInputString - kPointerSize;
   static const int kStringStartMinusOne = kSuccessfulCaptures - kPointerSize;
+  static const int kBacktrackCount = kStringStartMinusOne - kSystemPointerSize;
   // First register address. Following registers are below it on the stack.
-  static const int kRegisterZero = kStringStartMinusOne - kPointerSize;
+  static const int kRegisterZero = kBacktrackCount - kSystemPointerSize;
 
   // Initial size of code buffer.
   static const int kRegExpCodeSize = 1024;
-
-  // Load a number of characters at the given offset from the
-  // current position, into the current-character register.
-  void LoadCurrentCharacterUnchecked(int cp_offset, int character_count);
 
   // Check whether preemption has been requested.
   void CheckPreemption();
@@ -220,6 +216,7 @@ class RegExpMacroAssemblerMIPS: public NativeRegExpMacroAssembler {
   Label check_preempt_label_;
   Label stack_overflow_label_;
   Label internal_failure_label_;
+  Label fallback_label_;
 };
 
 }  // namespace internal

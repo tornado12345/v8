@@ -5,8 +5,8 @@
 #ifndef V8_COMPILER_FRAME_H_
 #define V8_COMPILER_FRAME_H_
 
-#include "src/bit-vector.h"
-#include "src/frame-constants.h"
+#include "src/execution/frame-constants.h"
+#include "src/utils/bit-vector.h"
 
 namespace v8 {
 namespace internal {
@@ -86,9 +86,11 @@ class CallDescriptor;
 //       |    return q-1   |   v                        v
 //  -----+-----------------+----- <-- stack ptr -------------
 //
-class Frame : public ZoneObject {
+class V8_EXPORT_PRIVATE Frame : public ZoneObject {
  public:
   explicit Frame(int fixed_frame_size_in_slots);
+  Frame(const Frame&) = delete;
+  Frame& operator=(const Frame&) = delete;
 
   inline int GetTotalFrameSlotCount() const { return frame_slot_count_; }
   inline int GetFixedSlotCount() const { return fixed_slot_count_; }
@@ -173,10 +175,7 @@ class Frame : public ZoneObject {
   int return_slot_count_;
   BitVector* allocated_registers_;
   BitVector* allocated_double_registers_;
-
-  DISALLOW_COPY_AND_ASSIGN(Frame);
 };
-
 
 // Represents an offset from either the stack pointer or frame pointer.
 class FrameOffset {
@@ -215,7 +214,7 @@ class FrameAccessState : public ZoneObject {
         has_frame_(false) {}
 
   const Frame* frame() const { return frame_; }
-  void MarkHasFrame(bool state);
+  V8_EXPORT_PRIVATE void MarkHasFrame(bool state);
 
   int sp_delta() const { return sp_delta_; }
   void ClearSPDelta() { sp_delta_ = 0; }

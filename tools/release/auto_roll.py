@@ -23,7 +23,11 @@ Please close rolling in case of a roll revert:
 https://v8-roll.appspot.com/
 This only works with a Google account.
 
-CQ_INCLUDE_TRYBOTS=luci.chromium.try:linux-blink-rel;luci.chromium.try:linux_optional_gpu_tests_rel;luci.chromium.try:mac_optional_gpu_tests_rel;luci.chromium.try:win_optional_gpu_tests_rel;luci.chromium.try:android_optional_gpu_tests_rel""")
+CQ_INCLUDE_TRYBOTS=luci.chromium.try:linux-blink-rel
+CQ_INCLUDE_TRYBOTS=luci.chromium.try:linux_optional_gpu_tests_rel
+CQ_INCLUDE_TRYBOTS=luci.chromium.try:mac_optional_gpu_tests_rel
+CQ_INCLUDE_TRYBOTS=luci.chromium.try:win_optional_gpu_tests_rel
+CQ_INCLUDE_TRYBOTS=luci.chromium.try:android_optional_gpu_tests_rel""")
 
 class Preparation(Step):
   MESSAGE = "Preparation."
@@ -42,14 +46,10 @@ class DetectLastRoll(Step):
     self['json_output']['monitoring_state'] = 'detect_last_roll'
     self["last_roll"] = self._options.last_roll
     if not self["last_roll"]:
-      # Interpret the DEPS file to retrieve the v8 revision.
-      # TODO(machenbach): This should be part or the setdep api of
-      # depot_tools.
-      Var = lambda var: '%s'
-      exec(FileToText(os.path.join(self._options.chromium, "DEPS")))
+      # Get last-rolled v8 revision from Chromium's DEPS file.
+      self["last_roll"] = self.Command(
+          "gclient", "getdep -r src/v8", cwd=self._options.chromium).strip()
 
-      # The revision rolled last.
-      self["last_roll"] = vars['v8_revision']
     self["last_version"] = self.GetVersionTag(self["last_roll"])
     assert self["last_version"], "The last rolled v8 revision is not tagged."
 

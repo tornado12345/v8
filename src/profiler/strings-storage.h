@@ -9,7 +9,7 @@
 
 #include "src/base/compiler-specific.h"
 #include "src/base/hashmap.h"
-#include "src/globals.h"
+#include "src/common/globals.h"
 
 namespace v8 {
 namespace internal {
@@ -22,6 +22,8 @@ class V8_EXPORT_PRIVATE StringsStorage {
  public:
   StringsStorage();
   ~StringsStorage();
+  StringsStorage(const StringsStorage&) = delete;
+  StringsStorage& operator=(const StringsStorage&) = delete;
 
   // Copies the given c-string and stores it, returning the stored copy, or just
   // returns the existing string in storage if it already exists.
@@ -35,6 +37,13 @@ class V8_EXPORT_PRIVATE StringsStorage {
   // Appends string resulting from name to prefix, then returns the stored
   // result.
   const char* GetConsName(const char* prefix, Name name);
+  // Reduces the refcount of the given string, freeing it if no other
+  // references are made to it.
+  // Returns true if the string was successfully unref'd.
+  bool Release(const char* str);
+
+  // Returns the number of strings in the store.
+  size_t GetStringCountForTesting() const;
 
  private:
   static bool StringsMatch(void* key1, void* key2);
@@ -46,8 +55,6 @@ class V8_EXPORT_PRIVATE StringsStorage {
   const char* GetVFormatted(const char* format, va_list args);
 
   base::CustomMatcherHashMap names_;
-
-  DISALLOW_COPY_AND_ASSIGN(StringsStorage);
 };
 
 }  // namespace internal

@@ -2,8 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// TODO(v8:8832): Enable --stress-opt on these tests
-// Flags: --experimental-wasm-threads --no-stress-opt
+// Flags: --wasm-grow-shared-memory --experimental-wasm-threads
 
 load("test/mjsunit/wasm/wasm-module-builder.js");
 
@@ -136,7 +135,7 @@ let workerHelpers = assertTrue.toString() + assertIsWasmSharedMemory.toString();
   var builder = new WasmModuleBuilder();
   builder.addImportedMemory("m", "memory", 5, 100, "shared");
   builder.addFunction("grow", kSig_i_i)
-    .addBody([kExprGetLocal, 0, kExprMemoryGrow, kMemoryZero])
+    .addBody([kExprLocalGet, 0, kExprMemoryGrow, kMemoryZero])
     .exportFunc();
   var module = new WebAssembly.Module(builder.toBuffer());
   let obj = {memory: memory, module: module};
@@ -168,7 +167,7 @@ let workerHelpers = assertTrue.toString() + assertIsWasmSharedMemory.toString();
   var builder = new WasmModuleBuilder();
   builder.addImportedMemory("m", "memory", 5, 100, "shared");
   builder.addFunction("grow", kSig_i_i)
-    .addBody([kExprGetLocal, 0, kExprMemoryGrow, kMemoryZero])
+    .addBody([kExprLocalGet, 0, kExprMemoryGrow, kMemoryZero])
     .exportFunc();
   var module = new WebAssembly.Module(builder.toBuffer());
   let obj = {memory: memory, module: module};
@@ -199,10 +198,10 @@ let workerHelpers = assertTrue.toString() + assertIsWasmSharedMemory.toString();
   var builder = new WasmModuleBuilder();
   builder.addImportedMemory("m", "memory", 5, 100, "shared");
   builder.addFunction("grow_twice", kSig_i_i)
-    .addBody([kExprGetLocal, 0,
+    .addBody([kExprLocalGet, 0,
         kExprMemoryGrow, kMemoryZero,
         kExprDrop,
-        kExprGetLocal, 0,
+        kExprLocalGet, 0,
         kExprMemoryGrow, kMemoryZero])
     .exportFunc();
   var module = new WebAssembly.Module(builder.toBuffer());
@@ -238,10 +237,10 @@ let workerHelpers = assertTrue.toString() + assertIsWasmSharedMemory.toString();
   var builder = new WasmModuleBuilder();
   builder.addImportedMemory("m", "memory", 5, 100, "shared");
   builder.addFunction("grow_and_size", kSig_i_i)
-    .addBody([kExprGetLocal, 0,
+    .addBody([kExprLocalGet, 0,
         kExprMemoryGrow, kMemoryZero,
         kExprDrop,
-        kExprGetLocal, 0,
+        kExprLocalGet, 0,
         kExprMemoryGrow, kMemoryZero,
         kExprDrop,
         kExprMemorySize, kMemoryZero])
@@ -297,13 +296,13 @@ let workerHelpers = assertTrue.toString() + assertIsWasmSharedMemory.toString();
   var builder = new WasmModuleBuilder();
   builder.addImportedMemory("m", "memory", 5, 100, "shared");
   builder.addFunction("grow", kSig_i_i)
-    .addBody([kExprGetLocal, 0, kExprMemoryGrow, kMemoryZero])
+    .addBody([kExprLocalGet, 0, kExprMemoryGrow, kMemoryZero])
     .exportFunc();
   builder.addFunction("atomic_load", kSig_i_i)
-    .addBody([kExprGetLocal, 0, kAtomicPrefix, kExprI32AtomicLoad, 2, 0])
+    .addBody([kExprLocalGet, 0, kAtomicPrefix, kExprI32AtomicLoad, 2, 0])
     .exportFunc();
   builder.addFunction("atomic_store", kSig_v_ii)
-    .addBody([kExprGetLocal, 0, kExprGetLocal, 1,
+    .addBody([kExprLocalGet, 0, kExprLocalGet, 1,
       kAtomicPrefix, kExprI32AtomicStore, 2, 0])
     .exportFunc();
   var module = new WebAssembly.Module(builder.toBuffer());
@@ -336,4 +335,18 @@ let workerHelpers = assertTrue.toString() + assertIsWasmSharedMemory.toString();
   assertEquals(obj.memory.buffer.byteLength, 25 * kPageSize);
   assertTraps(kTrapMemOutOfBounds,
       () => instance.exports.atomic_load(25 * kPageSize - 3));
+})();
+
+(function TestMemoryBufferTypeAfterGrow() {
+  const memory = new WebAssembly.Memory({
+    "initial": 1, "maximum": 2, "shared": true });
+  assertInstanceof(memory.buffer, SharedArrayBuffer);
+  assertEquals(memory.grow(1), 1);
+  assertInstanceof(memory.buffer, SharedArrayBuffer);
+})();
+
+(function TestSharedMemoryGrowByZero() {
+  const memory = new WebAssembly.Memory({
+    "initial": 1, "maximum": 2, "shared": true });
+  assertEquals(memory.grow(0), 1);
 })();

@@ -5,7 +5,8 @@
 #ifndef V8_OBJECTS_SLOTS_H_
 #define V8_OBJECTS_SLOTS_H_
 
-#include "src/globals.h"
+#include "src/base/memory.h"
+#include "src/common/globals.h"
 
 namespace v8 {
 namespace internal {
@@ -108,13 +109,17 @@ class FullObjectSlot : public SlotBase<FullObjectSlot, Address> {
   // raw value.
   inline bool contains_value(Address raw_value) const;
 
-  inline const Object operator*() const;
+  inline Object operator*() const;
+  inline Object load(IsolateRoot isolate) const;
   inline void store(Object value) const;
 
   inline Object Acquire_Load() const;
+  inline Object Acquire_Load(IsolateRoot isolate) const;
   inline Object Relaxed_Load() const;
+  inline Object Relaxed_Load(IsolateRoot isolate) const;
   inline void Relaxed_Store(Object value) const;
   inline void Release_Store(Object value) const;
+  inline Object Relaxed_CompareAndSwap(Object old, Object target) const;
   inline Object Release_CompareAndSwap(Object old, Object target) const;
 };
 
@@ -141,10 +146,12 @@ class FullMaybeObjectSlot
   explicit FullMaybeObjectSlot(SlotBase<T, TData, kSlotDataAlignment> slot)
       : SlotBase(slot.address()) {}
 
-  inline const MaybeObject operator*() const;
+  inline MaybeObject operator*() const;
+  inline MaybeObject load(IsolateRoot isolate) const;
   inline void store(MaybeObject value) const;
 
   inline MaybeObject Relaxed_Load() const;
+  inline MaybeObject Relaxed_Load(IsolateRoot isolate) const;
   inline void Relaxed_Store(MaybeObject value) const;
   inline void Release_CompareAndSwap(MaybeObject old, MaybeObject target) const;
 };
@@ -166,12 +173,104 @@ class FullHeapObjectSlot : public SlotBase<FullHeapObjectSlot, Address> {
   explicit FullHeapObjectSlot(SlotBase<T, TData, kSlotDataAlignment> slot)
       : SlotBase(slot.address()) {}
 
-  inline const HeapObjectReference operator*() const;
+  inline HeapObjectReference operator*() const;
+  inline HeapObjectReference load(IsolateRoot isolate) const;
   inline void store(HeapObjectReference value) const;
 
   inline HeapObject ToHeapObject() const;
 
   inline void StoreHeapObject(HeapObject value) const;
+};
+
+// TODO(ishell, v8:8875): When pointer compression is enabled the [u]intptr_t
+// and double fields are only kTaggedSize aligned so in order to avoid undefined
+// behavior in C++ code we use this iterator adaptor when using STL algorithms
+// with unaligned pointers.
+// It will be removed once all v8:8875 is fixed and all the full pointer and
+// double values in compressed V8 heap are properly aligned.
+template <typename T>
+class UnalignedSlot : public SlotBase<UnalignedSlot<T>, T, 1> {
+ public:
+  // This class is a stand-in for "T&" that uses custom read/write operations
+  // for the actual memory accesses.
+  class Reference {
+   public:
+    explicit Reference(Address address) : address_(address) {}
+    Reference(const Reference&) V8_NOEXCEPT = default;
+
+    Reference& operator=(const Reference& other) V8_NOEXCEPT {
+      base::WriteUnalignedValue<T>(address_, other.value());
+      return *this;
+    }
+    Reference& operator=(T value) {
+      base::WriteUnalignedValue<T>(address_, value);
+      return *this;
+    }
+
+    // Values of type UnalignedSlot::reference must be implicitly convertible
+    // to UnalignedSlot::value_type.
+    operator T() const { return value(); }
+
+    void swap(Reference& other) {
+      T tmp = value();
+      base::WriteUnalignedValue<T>(address_, other.value());
+      base::WriteUnalignedValue<T>(other.address_, tmp);
+    }
+
+    bool operator<(const Reference& other) const {
+      return value() < other.value();
+    }
+
+    bool operator==(const Reference& other) const {
+      return value() == other.value();
+    }
+
+   private:
+    T value() const { return base::ReadUnalignedValue<T>(address_); }
+
+    Address address_;
+  };
+
+  // The rest of this class follows C++'s "RandomAccessIterator" requirements.
+  // Most of the heavy lifting is inherited from SlotBase.
+  using difference_type = int;
+  using value_type = T;
+  using reference = Reference;
+  using pointer = T*;
+  using iterator_category = std::random_access_iterator_tag;
+
+  UnalignedSlot() : SlotBase<UnalignedSlot<T>, T, 1>(kNullAddress) {}
+  explicit UnalignedSlot(Address address)
+      : SlotBase<UnalignedSlot<T>, T, 1>(address) {}
+  explicit UnalignedSlot(T* address)
+      : SlotBase<UnalignedSlot<T>, T, 1>(reinterpret_cast<Address>(address)) {}
+
+  Reference operator*() const {
+    return Reference(SlotBase<UnalignedSlot<T>, T, 1>::address());
+  }
+  Reference operator[](difference_type i) const {
+    return Reference(SlotBase<UnalignedSlot<T>, T, 1>::address() +
+                     i * sizeof(T));
+  }
+
+  friend void swap(Reference lhs, Reference rhs) { lhs.swap(rhs); }
+
+  friend difference_type operator-(UnalignedSlot a, UnalignedSlot b) {
+    return static_cast<int>(a.address() - b.address()) / sizeof(T);
+  }
+};
+
+// An off-heap uncompressed object slot can be the same as an on-heap one, with
+// a few methods deleted.
+class OffHeapFullObjectSlot : public FullObjectSlot {
+ public:
+  OffHeapFullObjectSlot() : FullObjectSlot() {}
+  explicit OffHeapFullObjectSlot(const Address* ptr) : FullObjectSlot(ptr) {}
+
+  inline Object operator*() const = delete;
+
+  using FullObjectSlot::Relaxed_Load;
+  inline Object Relaxed_Load() const = delete;
 };
 
 }  // namespace internal

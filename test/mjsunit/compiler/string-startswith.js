@@ -19,3 +19,63 @@
   assertEquals(true, foo('abc'));
   assertOptimized(foo);
 })();
+
+(function() {
+  function f() { return "abc".startsWith(); }
+
+  %PrepareFunctionForOptimization(f);
+  assertEquals(false, f());
+  assertEquals(false, f());
+  %OptimizeFunctionOnNextCall(f);
+  assertEquals(false, f());
+  assertOptimized(f);
+})();
+
+(function() {
+  function g(n) { return "abc".startsWith("a", n); }
+
+  %PrepareFunctionForOptimization(g);
+  assertEquals(true, g(-1));
+  assertEquals(true, g(0));
+  assertEquals(false, g(1));
+  assertEquals(false, g(2));
+  assertEquals(false, g(3));
+  assertEquals(false, g(4));
+  %OptimizeFunctionOnNextCall(g);
+  assertEquals(true, g(-1));
+  assertEquals(true, g(0));
+  assertEquals(false, g(1));
+  assertEquals(false, g(2));
+  assertEquals(false, g(3));
+  assertEquals(false, g(4));
+  assertOptimized(g);
+})();
+
+(function() {
+  function g(n) { return "cba".startsWith("a", n); }
+
+  %PrepareFunctionForOptimization(g);
+  assertEquals(false, g(-1));
+  assertEquals(false, g(0));
+  assertEquals(false, g(1));
+  assertEquals(true, g(2));
+  assertEquals(false, g(3));
+  assertEquals(false, g(4));
+  %OptimizeFunctionOnNextCall(g);
+  assertEquals(false, g(-1));
+  assertEquals(false, g(0));
+  assertEquals(false, g(1));
+  assertEquals(true, g(2));
+  assertEquals(false, g(3));
+  assertEquals(false, g(4));
+  assertOptimized(g);
+})();
+
+(function() {
+  function f(n) { return "cba".startsWith("a", n); }
+  %PrepareFunctionForOptimization(f);
+  f();
+  f();
+  %OptimizeFunctionOnNextCall(f);
+  assertEquals(false, f(1073741824));
+})();

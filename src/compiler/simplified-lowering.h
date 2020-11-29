@@ -12,6 +12,9 @@
 
 namespace v8 {
 namespace internal {
+
+class TickCounter;
+
 namespace compiler {
 
 // Forward declarations.
@@ -26,7 +29,8 @@ class V8_EXPORT_PRIVATE SimplifiedLowering final {
   SimplifiedLowering(JSGraph* jsgraph, JSHeapBroker* broker, Zone* zone,
                      SourcePositionTable* source_position,
                      NodeOriginTable* node_origins,
-                     PoisoningMitigationLevel poisoning_level);
+                     PoisoningMitigationLevel poisoning_level,
+                     TickCounter* tick_counter, Linkage* linkage);
   ~SimplifiedLowering() = default;
 
   void LowerAllNodes();
@@ -67,6 +71,9 @@ class V8_EXPORT_PRIVATE SimplifiedLowering final {
 
   PoisoningMitigationLevel poisoning_level_;
 
+  TickCounter* const tick_counter_;
+  Linkage* const linkage_;
+
   Node* Float64Round(Node* const node);
   Node* Float64Sign(Node* const node);
   Node* Int32Abs(Node* const node);
@@ -92,6 +99,7 @@ class V8_EXPORT_PRIVATE SimplifiedLowering final {
   CommonOperatorBuilder* common() { return jsgraph()->common(); }
   MachineOperatorBuilder* machine() { return jsgraph()->machine(); }
   SimplifiedOperatorBuilder* simplified() { return jsgraph()->simplified(); }
+  Linkage* linkage() { return linkage_; }
 };
 
 }  // namespace compiler

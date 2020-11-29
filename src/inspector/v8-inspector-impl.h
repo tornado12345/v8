@@ -33,6 +33,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <unordered_map>
 
 #include "src/base/macros.h"
@@ -58,6 +59,8 @@ class V8InspectorImpl : public V8Inspector {
  public:
   V8InspectorImpl(v8::Isolate*, V8InspectorClient*);
   ~V8InspectorImpl() override;
+  V8InspectorImpl(const V8InspectorImpl&) = delete;
+  V8InspectorImpl& operator=(const V8InspectorImpl&) = delete;
 
   v8::Isolate* isolate() const { return m_isolate; }
   V8InspectorClient* client() { return m_client; }
@@ -76,7 +79,7 @@ class V8InspectorImpl : public V8Inspector {
   // V8Inspector implementation.
   std::unique_ptr<V8InspectorSession> connect(int contextGroupId,
                                               V8Inspector::Channel*,
-                                              const StringView& state) override;
+                                              StringView state) override;
   void contextCreated(const V8ContextInfo&) override;
   void contextDestroyed(v8::Local<v8::Context>) override;
   v8::MaybeLocal<v8::Context> contextById(int contextId) override;
@@ -84,27 +87,29 @@ class V8InspectorImpl : public V8Inspector {
   void resetContextGroup(int contextGroupId) override;
   void idleStarted() override;
   void idleFinished() override;
-  unsigned exceptionThrown(v8::Local<v8::Context>, const StringView& message,
+  unsigned exceptionThrown(v8::Local<v8::Context>, StringView message,
                            v8::Local<v8::Value> exception,
-                           const StringView& detailedMessage,
-                           const StringView& url, unsigned lineNumber,
-                           unsigned columnNumber, std::unique_ptr<V8StackTrace>,
+                           StringView detailedMessage, StringView url,
+                           unsigned lineNumber, unsigned columnNumber,
+                           std::unique_ptr<V8StackTrace>,
                            int scriptId) override;
   void exceptionRevoked(v8::Local<v8::Context>, unsigned exceptionId,
-                        const StringView& message) override;
+                        StringView message) override;
   std::unique_ptr<V8StackTrace> createStackTrace(
       v8::Local<v8::StackTrace>) override;
   std::unique_ptr<V8StackTrace> captureStackTrace(bool fullStack) override;
-  void asyncTaskScheduled(const StringView& taskName, void* task,
+  void asyncTaskScheduled(StringView taskName, void* task,
                           bool recurring) override;
   void asyncTaskCanceled(void* task) override;
   void asyncTaskStarted(void* task) override;
   void asyncTaskFinished(void* task) override;
   void allAsyncTasksCanceled() override;
 
-  V8StackTraceId storeCurrentStackTrace(const StringView& description) override;
+  V8StackTraceId storeCurrentStackTrace(StringView description) override;
   void externalAsyncTaskStarted(const V8StackTraceId& parent) override;
   void externalAsyncTaskFinished(const V8StackTraceId& parent) override;
+
+  std::shared_ptr<Counters> enableCounters() override;
 
   unsigned nextExceptionId() { return ++m_lastExceptionId; }
   void enableStackCapturingIfNeeded();
@@ -143,6 +148,8 @@ class V8InspectorImpl : public V8Inspector {
   };
 
  private:
+  friend class Counters;
+
   v8::Isolate* m_isolate;
   V8InspectorClient* m_client;
   std::unique_ptr<V8Debugger> m_debugger;
@@ -173,7 +180,7 @@ class V8InspectorImpl : public V8Inspector {
 
   std::unique_ptr<V8Console> m_console;
 
-  DISALLOW_COPY_AND_ASSIGN(V8InspectorImpl);
+  Counters* m_counters = nullptr;
 };
 
 }  // namespace v8_inspector

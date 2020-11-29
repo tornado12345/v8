@@ -5,6 +5,9 @@
 #ifndef V8_SNAPSHOT_READ_ONLY_SERIALIZER_H_
 #define V8_SNAPSHOT_READ_ONLY_SERIALIZER_H_
 
+#include <unordered_set>
+
+#include "src/base/hashmap.h"
 #include "src/snapshot/roots-serializer.h"
 
 namespace v8 {
@@ -13,10 +16,12 @@ namespace internal {
 class HeapObject;
 class SnapshotByteSink;
 
-class ReadOnlySerializer : public RootsSerializer {
+class V8_EXPORT_PRIVATE ReadOnlySerializer : public RootsSerializer {
  public:
-  explicit ReadOnlySerializer(Isolate* isolate);
+  ReadOnlySerializer(Isolate* isolate, Snapshot::SerializerFlags flags);
   ~ReadOnlySerializer() override;
+  ReadOnlySerializer(const ReadOnlySerializer&) = delete;
+  ReadOnlySerializer& operator=(const ReadOnlySerializer&) = delete;
 
   void SerializeReadOnlyRoots();
 
@@ -29,13 +34,16 @@ class ReadOnlySerializer : public RootsSerializer {
   // ReadOnlyObjectCache bytecode into |sink|. Returns whether this was
   // successful.
   bool SerializeUsingReadOnlyObjectCache(SnapshotByteSink* sink,
-                                         HeapObject obj);
+                                         Handle<HeapObject> obj);
 
  private:
-  void SerializeObject(HeapObject o) override;
+  void SerializeObjectImpl(Handle<HeapObject> o) override;
   bool MustBeDeferred(HeapObject object) override;
 
-  DISALLOW_COPY_AND_ASSIGN(ReadOnlySerializer);
+#ifdef DEBUG
+  IdentityMap<int, base::DefaultAllocationPolicy> serialized_objects_;
+  bool did_serialize_not_mapped_symbol_;
+#endif
 };
 
 }  // namespace internal

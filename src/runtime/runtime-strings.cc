@@ -2,19 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/arguments-inl.h"
-#include "src/conversions.h"
-#include "src/counters.h"
+#include "src/execution/arguments-inl.h"
 #include "src/heap/heap-inl.h"
-#include "src/objects-inl.h"
+#include "src/logging/counters.h"
+#include "src/numbers/conversions.h"
 #include "src/objects/js-array-inl.h"
+#include "src/objects/objects-inl.h"
 #include "src/objects/slots.h"
 #include "src/objects/smi.h"
-#include "src/regexp/jsregexp-inl.h"
 #include "src/regexp/regexp-utils.h"
 #include "src/runtime/runtime-utils.h"
-#include "src/string-builder-inl.h"
-#include "src/string-search.h"
+#include "src/strings/string-builder-inl.h"
+#include "src/strings/string-search.h"
 
 namespace v8 {
 namespace internal {
@@ -77,8 +76,8 @@ MaybeHandle<String> StringReplaceOneCharWithString(
   recursion_limit--;
   if (subject->IsConsString()) {
     ConsString cons = ConsString::cast(*subject);
-    Handle<String> first = handle(cons->first(), isolate);
-    Handle<String> second = handle(cons->second(), isolate);
+    Handle<String> first = handle(cons.first(), isolate);
+    Handle<String> second = handle(cons.second(), isolate);
     Handle<String> new_first;
     if (!StringReplaceOneCharWithString(isolate, first, search, replace, found,
                                         recursion_limit).ToHandle(&new_first)) {
@@ -276,7 +275,7 @@ RUNTIME_FUNCTION(Runtime_StringBuilderConcat) {
   DCHECK_EQ(3, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSArray, array, 0);
   int32_t array_length;
-  if (!args[1]->ToInt32(&array_length)) {
+  if (!args[1].ToInt32(&array_length)) {
     THROW_NEW_ERROR_RETURN_FAILURE(isolate, NewInvalidStringLengthError());
   }
   CONVERT_ARG_HANDLE_CHECKED(String, special, 2);
@@ -301,17 +300,17 @@ RUNTIME_FUNCTION(Runtime_StringBuilderConcat) {
   bool one_byte = special->IsOneByteRepresentation();
 
   {
-    DisallowHeapAllocation no_gc;
+    DisallowGarbageCollection no_gc;
     FixedArray fixed_array = FixedArray::cast(array->elements());
-    if (fixed_array->length() < array_length) {
-      array_length = fixed_array->length();
+    if (fixed_array.length() < array_length) {
+      array_length = fixed_array.length();
     }
 
     if (array_length == 0) {
       return ReadOnlyRoots(isolate).empty_string();
     } else if (array_length == 1) {
-      Object first = fixed_array->get(0);
-      if (first->IsString()) return first;
+      Object first = fixed_array.get(0);
+      if (first.IsString()) return first;
     }
     length = StringBuilderConcatLength(special_length, fixed_array,
                                        array_length, &one_byte);
@@ -328,7 +327,7 @@ RUNTIME_FUNCTION(Runtime_StringBuilderConcat) {
     Handle<SeqOneByteString> answer;
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
         isolate, answer, isolate->factory()->NewRawOneByteString(length));
-    DisallowHeapAllocation no_gc;
+    DisallowGarbageCollection no_gc;
     StringBuilderConcatHelper(*special, answer->GetChars(no_gc),
                               FixedArray::cast(array->elements()),
                               array_length);
@@ -337,7 +336,7 @@ RUNTIME_FUNCTION(Runtime_StringBuilderConcat) {
     Handle<SeqTwoByteString> answer;
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
         isolate, answer, isolate->factory()->NewRawTwoByteString(length));
-    DisallowHeapAllocation no_gc;
+    DisallowGarbageCollection no_gc;
     StringBuilderConcatHelper(*special, answer->GetChars(no_gc),
                               FixedArray::cast(array->elements()),
                               array_length);
@@ -352,24 +351,24 @@ RUNTIME_FUNCTION(Runtime_StringBuilderConcat) {
 // the length of the successfully copied prefix.
 static int CopyCachedOneByteCharsToArray(Heap* heap, const uint8_t* chars,
                                          FixedArray elements, int length) {
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
   FixedArray one_byte_cache = heap->single_character_string_cache();
   Object undefined = ReadOnlyRoots(heap).undefined_value();
   int i;
-  WriteBarrierMode mode = elements->GetWriteBarrierMode(no_gc);
+  WriteBarrierMode mode = elements.GetWriteBarrierMode(no_gc);
   for (i = 0; i < length; ++i) {
-    Object value = one_byte_cache->get(chars[i]);
+    Object value = one_byte_cache.get(chars[i]);
     if (value == undefined) break;
-    elements->set(i, value, mode);
+    elements.set(i, value, mode);
   }
   if (i < length) {
-    MemsetTagged(elements->RawFieldOfElementAt(i), Smi::kZero, length - i);
+    MemsetTagged(elements.RawFieldOfElementAt(i), Smi::zero(), length - i);
   }
 #ifdef DEBUG
   for (int j = 0; j < length; ++j) {
-    Object element = elements->get(j);
-    DCHECK(element == Smi::kZero ||
-           (element->IsString() && String::cast(element)->LooksValid()));
+    Object element = elements.get(j);
+    DCHECK(element == Smi::zero() ||
+           (element.IsString() && String::cast(element).LooksValid()));
   }
 #endif
   return i;
@@ -384,7 +383,8 @@ RUNTIME_FUNCTION(Runtime_StringToArray) {
   CONVERT_NUMBER_CHECKED(uint32_t, limit, Uint32, args[1]);
 
   s = String::Flatten(isolate, s);
-  const int length = static_cast<int>(Min<uint32_t>(s->length(), limit));
+  const int length =
+      static_cast<int>(std::min(static_cast<uint32_t>(s->length()), limit));
 
   Handle<FixedArray> elements;
   int position = 0;
@@ -392,13 +392,13 @@ RUNTIME_FUNCTION(Runtime_StringToArray) {
     // Try using cached chars where possible.
     elements = isolate->factory()->NewUninitializedFixedArray(length);
 
-    DisallowHeapAllocation no_gc;
+    DisallowGarbageCollection no_gc;
     String::FlatContent content = s->GetFlatContent(no_gc);
     if (content.IsOneByte()) {
       Vector<const uint8_t> chars = content.ToOneByteVector();
       // Note, this will initialize all elements (not only the prefix)
       // to prevent GC from seeing partially initialized array.
-      position = CopyCachedOneByteCharsToArray(isolate->heap(), chars.start(),
+      position = CopyCachedOneByteCharsToArray(isolate->heap(), chars.begin(),
                                                *elements, length);
     } else {
       MemsetTagged(elements->data_start(),
@@ -415,7 +415,7 @@ RUNTIME_FUNCTION(Runtime_StringToArray) {
 
 #ifdef DEBUG
   for (int i = 0; i < length; ++i) {
-    DCHECK_EQ(String::cast(elements->get(i))->length(), 1);
+    DCHECK_EQ(String::cast(elements->get(i)).length(), 1);
   }
 #endif
 

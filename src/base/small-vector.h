@@ -5,10 +5,13 @@
 #ifndef V8_BASE_SMALL_VECTOR_H_
 #define V8_BASE_SMALL_VECTOR_H_
 
+#include <algorithm>
 #include <type_traits>
+#include <utility>
 
 #include "src/base/bits.h"
 #include "src/base/macros.h"
+#include "src/base/platform/wrappers.h"
 
 namespace v8 {
 namespace base {
@@ -26,11 +29,16 @@ class SmallVector {
   static constexpr size_t kInlineSize = kSize;
 
   SmallVector() = default;
+  explicit SmallVector(size_t size) { resize_no_init(size); }
   SmallVector(const SmallVector& other) V8_NOEXCEPT { *this = other; }
   SmallVector(SmallVector&& other) V8_NOEXCEPT { *this = std::move(other); }
+  SmallVector(std::initializer_list<T> init) {
+    resize_no_init(init.size());
+    base::Memcpy(begin_, init.begin(), sizeof(T) * init.size());
+  }
 
   ~SmallVector() {
-    if (is_big()) free(begin_);
+    if (is_big()) base::Free(begin_);
   }
 
   SmallVector& operator=(const SmallVector& other) V8_NOEXCEPT {
@@ -38,11 +46,11 @@ class SmallVector {
     size_t other_size = other.size();
     if (capacity() < other_size) {
       // Create large-enough heap-allocated storage.
-      if (is_big()) free(begin_);
-      begin_ = reinterpret_cast<T*>(malloc(sizeof(T) * other_size));
+      if (is_big()) base::Free(begin_);
+      begin_ = reinterpret_cast<T*>(base::Malloc(sizeof(T) * other_size));
       end_of_storage_ = begin_ + other_size;
     }
-    memcpy(begin_, other.begin_, sizeof(T) * other_size);
+    base::Memcpy(begin_, other.begin_, sizeof(T) * other_size);
     end_ = begin_ + other_size;
     return *this;
   }
@@ -50,7 +58,7 @@ class SmallVector {
   SmallVector& operator=(SmallVector&& other) V8_NOEXCEPT {
     if (this == &other) return *this;
     if (other.is_big()) {
-      if (is_big()) free(begin_);
+      if (is_big()) base::Free(begin_);
       begin_ = other.begin_;
       end_ = other.end_;
       end_of_storage_ = other.end_of_storage_;
@@ -58,7 +66,7 @@ class SmallVector {
     } else {
       DCHECK_GE(capacity(), other.size());  // Sanity check.
       size_t other_size = other.size();
-      memcpy(begin_, other.begin_, sizeof(T) * other_size);
+      base::Memcpy(begin_, other.begin_, sizeof(T) * other_size);
       end_ = begin_ + other_size;
     }
     return *this;
@@ -81,22 +89,29 @@ class SmallVector {
     DCHECK_NE(0, size());
     return end_[-1];
   }
+  const T& back() const {
+    DCHECK_NE(0, size());
+    return end_[-1];
+  }
 
   T& operator[](size_t index) {
     DCHECK_GT(size(), index);
     return begin_[index];
   }
 
-  const T& operator[](size_t index) const {
+  const T& at(size_t index) const {
     DCHECK_GT(size(), index);
     return begin_[index];
   }
 
+  const T& operator[](size_t index) const { return at(index); }
+
   template <typename... Args>
   void emplace_back(Args&&... args) {
-    if (V8_UNLIKELY(end_ == end_of_storage_)) Grow();
-    new (end_) T(std::forward<Args>(args)...);
-    ++end_;
+    T* end = end_;
+    if (V8_UNLIKELY(end == end_of_storage_)) end = Grow();
+    new (end) T(std::forward<Args>(args)...);
+    end_ = end + 1;
   }
 
   void pop_back(size_t count = 1) {
@@ -128,16 +143,23 @@ class SmallVector {
   typename std::aligned_storage<sizeof(T) * kInlineSize, alignof(T)>::type
       inline_storage_;
 
-  void Grow(size_t min_capacity = 0) {
+  // Grows the backing store by a factor of two. Returns the new end of the used
+  // storage (this reduces binary size).
+  V8_NOINLINE T* Grow() { return Grow(0); }
+
+  // Grows the backing store by a factor of two, and at least to {min_capacity}.
+  V8_NOINLINE T* Grow(size_t min_capacity) {
     size_t in_use = end_ - begin_;
     size_t new_capacity =
         base::bits::RoundUpToPowerOfTwo(std::max(min_capacity, 2 * capacity()));
-    T* new_storage = reinterpret_cast<T*>(malloc(sizeof(T) * new_capacity));
-    memcpy(new_storage, begin_, sizeof(T) * in_use);
-    if (is_big()) free(begin_);
+    T* new_storage =
+        reinterpret_cast<T*>(base::Malloc(sizeof(T) * new_capacity));
+    base::Memcpy(new_storage, begin_, sizeof(T) * in_use);
+    if (is_big()) base::Free(begin_);
     begin_ = new_storage;
     end_ = new_storage + in_use;
     end_of_storage_ = new_storage + new_capacity;
+    return end_;
   }
 
   bool is_big() const { return begin_ != inline_storage_begin(); }

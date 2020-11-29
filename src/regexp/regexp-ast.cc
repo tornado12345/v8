@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/ostreams.h"
 #include "src/regexp/regexp-ast.h"
+#include "src/utils/ostreams.h"
 
 namespace v8 {
 namespace internal {
@@ -309,8 +309,8 @@ RegExpDisjunction::RegExpDisjunction(ZoneList<RegExpTree*>* alternatives)
   max_match_ = first_alternative->max_match();
   for (int i = 1; i < alternatives->length(); i++) {
     RegExpTree* alternative = alternatives->at(i);
-    min_match_ = Min(min_match_, alternative->min_match());
-    max_match_ = Max(max_match_, alternative->max_match());
+    min_match_ = std::min(min_match_, alternative->min_match());
+    max_match_ = std::max(max_match_, alternative->max_match());
   }
 }
 

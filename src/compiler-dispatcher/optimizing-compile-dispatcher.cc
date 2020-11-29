@@ -5,16 +5,18 @@
 #include "src/compiler-dispatcher/optimizing-compile-dispatcher.h"
 
 #include "src/base/atomicops.h"
-#include "src/base/template-utils.h"
-#include "src/cancelable-task.h"
-#include "src/compiler.h"
-#include "src/counters.h"
-#include "src/isolate.h"
-#include "src/log.h"
-#include "src/objects-inl.h"
-#include "src/optimized-compilation-info.h"
+#include "src/codegen/compiler.h"
+#include "src/codegen/optimized-compilation-info.h"
+#include "src/execution/isolate.h"
+#include "src/execution/local-isolate.h"
+#include "src/heap/local-heap.h"
+#include "src/heap/parked-scope.h"
+#include "src/init/v8.h"
+#include "src/logging/counters.h"
+#include "src/logging/log.h"
+#include "src/objects/objects-inl.h"
+#include "src/tasks/cancelable-task.h"
 #include "src/tracing/trace-event.h"
-#include "src/v8.h"
 
 namespace v8 {
 namespace internal {
@@ -25,7 +27,7 @@ void DisposeCompilationJob(OptimizedCompilationJob* job,
                            bool restore_function_code) {
   if (restore_function_code) {
     Handle<JSFunction> function = job->compilation_info()->closure();
-    function->set_code(function->shared()->GetCode());
+    function->set_code(function->shared().GetCode());
     if (function->IsInOptimizationQueue()) {
       function->ClearOptimizationMarker();
     }
@@ -57,27 +59,27 @@ class OptimizingCompileDispatcher::CompileTask : public CancelableTask {
  private:
   // v8::Task overrides.
   void RunInternal() override {
-    DisallowHeapAllocation no_allocation;
-    DisallowHandleAllocation no_handles;
-    DisallowHandleDereference no_deref;
+    LocalIsolate local_isolate(isolate_, ThreadKind::kBackground);
+    DCHECK(local_isolate.heap()->IsParked());
 
     {
       WorkerThreadRuntimeCallStatsScope runtime_call_stats_scope(
           worker_thread_runtime_call_stats_);
       RuntimeCallTimerScope runtimeTimer(
           runtime_call_stats_scope.Get(),
-          RuntimeCallCounterId::kRecompileConcurrent);
+          RuntimeCallCounterId::kOptimizeBackgroundDispatcherJob);
 
       TimerEventScope<TimerEventRecompileConcurrent> timer(isolate_);
       TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.compile"),
-                   "V8.RecompileConcurrent");
+                   "V8.OptimizeBackground");
 
       if (dispatcher_->recompilation_delay_ != 0) {
         base::OS::Sleep(base::TimeDelta::FromMilliseconds(
             dispatcher_->recompilation_delay_));
       }
 
-      dispatcher_->CompileNext(dispatcher_->NextInput(true));
+      dispatcher_->CompileNext(dispatcher_->NextInput(&local_isolate, true),
+                               runtime_call_stats_scope.Get(), &local_isolate);
     }
     {
       base::MutexGuard lock_guard(&dispatcher_->ref_count_mutex_);
@@ -106,7 +108,7 @@ OptimizingCompileDispatcher::~OptimizingCompileDispatcher() {
 }
 
 OptimizedCompilationJob* OptimizingCompileDispatcher::NextInput(
-    bool check_if_flushing) {
+    LocalIsolate* local_isolate, bool check_if_flushing) {
   base::MutexGuard access_input_queue_(&input_queue_mutex_);
   if (input_queue_length_ == 0) return nullptr;
   OptimizedCompilationJob* job = input_queue_[InputQueueIndex(0)];
@@ -115,6 +117,7 @@ OptimizedCompilationJob* OptimizingCompileDispatcher::NextInput(
   input_queue_length_--;
   if (check_if_flushing) {
     if (mode_ == FLUSH) {
+      UnparkedScope scope(local_isolate->heap());
       AllowHandleDereference allow_handle_dereference;
       DisposeCompilationJob(job, true);
       return nullptr;
@@ -123,11 +126,13 @@ OptimizedCompilationJob* OptimizingCompileDispatcher::NextInput(
   return job;
 }
 
-void OptimizingCompileDispatcher::CompileNext(OptimizedCompilationJob* job) {
+void OptimizingCompileDispatcher::CompileNext(OptimizedCompilationJob* job,
+                                              RuntimeCallStats* stats,
+                                              LocalIsolate* local_isolate) {
   if (!job) return;
 
   // The function may have already been optimized by OSR.  Simply continue.
-  CompilationJob::Status status = job->ExecuteJob();
+  CompilationJob::Status status = job->ExecuteJob(stats, local_isolate);
   USE(status);  // Prevent an unused-variable error.
 
   {
@@ -194,14 +199,10 @@ void OptimizingCompileDispatcher::Stop() {
     mode_ = COMPILE;
   }
 
-  if (recompilation_delay_ != 0) {
-    // At this point the optimizing compiler thread's event loop has stopped.
-    // There is no need for a mutex when reading input_queue_length_.
-    while (input_queue_length_ > 0) CompileNext(NextInput());
-    InstallOptimizedFunctions();
-  } else {
-    FlushOutputQueue(false);
-  }
+  // At this point the optimizing compiler thread's event loop has stopped.
+  // There is no need for a mutex when reading input_queue_length_.
+  DCHECK_EQ(input_queue_length_, 0);
+  FlushOutputQueue(false);
 }
 
 void OptimizingCompileDispatcher::InstallOptimizedFunctions() {
@@ -217,7 +218,7 @@ void OptimizingCompileDispatcher::InstallOptimizedFunctions() {
     }
     OptimizedCompilationInfo* info = job->compilation_info();
     Handle<JSFunction> function(*info->closure(), isolate_);
-    if (function->HasOptimizedCode()) {
+    if (function->HasAvailableCodeKind(info->code_kind())) {
       if (FLAG_trace_concurrent_recompilation) {
         PrintF("  ** Aborting compilation for ");
         function->ShortPrint();
@@ -244,14 +245,14 @@ void OptimizingCompileDispatcher::QueueForOptimization(
     blocked_jobs_++;
   } else {
     V8::GetCurrentPlatform()->CallOnWorkerThread(
-        base::make_unique<CompileTask>(isolate_, this));
+        std::make_unique<CompileTask>(isolate_, this));
   }
 }
 
 void OptimizingCompileDispatcher::Unblock() {
   while (blocked_jobs_ > 0) {
     V8::GetCurrentPlatform()->CallOnWorkerThread(
-        base::make_unique<CompileTask>(isolate_, this));
+        std::make_unique<CompileTask>(isolate_, this));
     blocked_jobs_--;
   }
 }

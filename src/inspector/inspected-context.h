@@ -5,6 +5,7 @@
 #ifndef V8_INSPECTOR_INSPECTED_CONTEXT_H_
 #define V8_INSPECTOR_INSPECTED_CONTEXT_H_
 
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -26,6 +27,8 @@ enum class V8InternalValueType { kNone, kEntry, kScope, kScopeList };
 class InspectedContext {
  public:
   ~InspectedContext();
+  InspectedContext(const InspectedContext&) = delete;
+  InspectedContext& operator=(const InspectedContext&) = delete;
 
   static int contextId(v8::Local<v8::Context>);
 
@@ -67,8 +70,6 @@ class InspectedContext {
   std::unordered_map<int, std::unique_ptr<InjectedScript>> m_injectedScripts;
   WeakCallbackData* m_weakCallbackData;
   v8::Global<v8::debug::WeakMap> m_internalObjects;
-
-  DISALLOW_COPY_AND_ASSIGN(InspectedContext);
 };
 
 }  // namespace v8_inspector

@@ -4,18 +4,20 @@
 
 #include "src/snapshot/roots-serializer.h"
 
+#include "src/execution/isolate.h"
 #include "src/heap/heap.h"
-#include "src/isolate.h"
-#include "src/objects-inl.h"
+#include "src/objects/objects-inl.h"
 #include "src/objects/slots.h"
 
 namespace v8 {
 namespace internal {
 
 RootsSerializer::RootsSerializer(Isolate* isolate,
+                                 Snapshot::SerializerFlags flags,
                                  RootIndex first_root_to_be_serialized)
-    : Serializer(isolate),
+    : Serializer(isolate, flags),
       first_root_to_be_serialized_(first_root_to_be_serialized),
+      object_cache_index_map_(isolate->heap()),
       can_be_rehashed_(true) {
   for (size_t i = 0; i < static_cast<size_t>(first_root_to_be_serialized);
        ++i) {
@@ -23,7 +25,7 @@ RootsSerializer::RootsSerializer(Isolate* isolate,
   }
 }
 
-int RootsSerializer::SerializeInObjectCache(HeapObject heap_object) {
+int RootsSerializer::SerializeInObjectCache(Handle<HeapObject> heap_object) {
   int index;
   if (!object_cache_index_map_.LookupOrInsert(heap_object, &index)) {
     // This object is not part of the object cache yet. Add it to the cache so
@@ -47,7 +49,7 @@ void RootsSerializer::VisitRootPointers(Root root, const char* description,
     // - Only root list elements that have been fully serialized can be
     //   referenced using kRootArray bytecodes.
     for (FullObjectSlot current = start; current < end; ++current) {
-      SerializeRootObject(*current);
+      SerializeRootObject(current);
       size_t root_index = current - roots_table.begin();
       root_has_been_serialized_.set(root_index);
     }
@@ -58,8 +60,8 @@ void RootsSerializer::VisitRootPointers(Root root, const char* description,
 
 void RootsSerializer::CheckRehashability(HeapObject obj) {
   if (!can_be_rehashed_) return;
-  if (!obj->NeedsRehashing()) return;
-  if (obj->CanBeRehashed()) return;
+  if (!obj.NeedsRehashing()) return;
+  if (obj.CanBeRehashed()) return;
   can_be_rehashed_ = false;
 }
 

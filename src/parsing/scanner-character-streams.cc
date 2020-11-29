@@ -8,25 +8,25 @@
 #include <vector>
 
 #include "include/v8.h"
-#include "src/counters.h"
-#include "src/globals.h"
-#include "src/handles.h"
-#include "src/objects-inl.h"
+#include "src/common/globals.h"
+#include "src/handles/handles.h"
+#include "src/logging/counters.h"
+#include "src/objects/objects-inl.h"
 #include "src/parsing/scanner.h"
-#include "src/unicode-inl.h"
+#include "src/strings/unicode-inl.h"
 
 namespace v8 {
 namespace internal {
 
-class ScopedExternalStringLock {
+class V8_NODISCARD ScopedExternalStringLock {
  public:
   explicit ScopedExternalStringLock(ExternalString string) {
     DCHECK(!string.is_null());
-    if (string->IsExternalOneByteString()) {
-      resource_ = ExternalOneByteString::cast(string)->resource();
+    if (string.IsExternalOneByteString()) {
+      resource_ = ExternalOneByteString::cast(string).resource();
     } else {
-      DCHECK(string->IsExternalTwoByteString());
-      resource_ = ExternalTwoByteString::cast(string)->resource();
+      DCHECK(string.IsExternalTwoByteString());
+      resource_ = ExternalTwoByteString::cast(string).resource();
     }
     DCHECK(resource_);
     resource_->Lock();
@@ -50,21 +50,6 @@ const unibrow::uchar kUtf8Bom = 0xFEFF;
 }  // namespace
 
 template <typename Char>
-struct CharTraits;
-
-template <>
-struct CharTraits<uint8_t> {
-  typedef SeqOneByteString String;
-  typedef ExternalOneByteString ExternalString;
-};
-
-template <>
-struct CharTraits<uint16_t> {
-  typedef SeqTwoByteString String;
-  typedef ExternalTwoByteString ExternalString;
-};
-
-template <typename Char>
 struct Range {
   const Char* start;
   const Char* end;
@@ -79,7 +64,7 @@ struct Range {
 template <typename Char>
 class OnHeapStream {
  public:
-  typedef typename CharTraits<Char>::String String;
+  using String = typename CharTraits<Char>::String;
 
   OnHeapStream(Handle<String> string, size_t start_offset, size_t end)
       : string_(string), start_offset_(start_offset), length_(end) {}
@@ -91,8 +76,8 @@ class OnHeapStream {
   // The no_gc argument is only here because of the templated way this class
   // is used along with other implementations that require V8 heap access.
   Range<Char> GetDataAt(size_t pos, RuntimeCallStats* stats,
-                        DisallowHeapAllocation* no_gc) {
-    return {&string_->GetChars(*no_gc)[start_offset_ + Min(length_, pos)],
+                        DisallowGarbageCollection* no_gc) {
+    return {&string_->GetChars(*no_gc)[start_offset_ + std::min(length_, pos)],
             &string_->GetChars(*no_gc)[start_offset_ + length_]};
   }
 
@@ -109,13 +94,13 @@ class OnHeapStream {
 // ExternalTwoByteString.
 template <typename Char>
 class ExternalStringStream {
-  typedef typename CharTraits<Char>::ExternalString ExternalString;
+  using ExternalString = typename CharTraits<Char>::ExternalString;
 
  public:
   ExternalStringStream(ExternalString string, size_t start_offset,
                        size_t length)
       : lock_(string),
-        data_(string->GetChars() + start_offset),
+        data_(string.GetChars() + start_offset),
         length_(length) {}
 
   ExternalStringStream(const ExternalStringStream& other) V8_NOEXCEPT
@@ -126,8 +111,8 @@ class ExternalStringStream {
   // The no_gc argument is only here because of the templated way this class
   // is used along with other implementations that require V8 heap access.
   Range<Char> GetDataAt(size_t pos, RuntimeCallStats* stats,
-                        DisallowHeapAllocation* no_gc = nullptr) {
-    return {&data_[Min(length_, pos)], &data_[length_]};
+                        DisallowGarbageCollection* no_gc = nullptr) {
+    return {&data_[std::min(length_, pos)], &data_[length_]};
   }
 
   static const bool kCanBeCloned = true;
@@ -148,8 +133,8 @@ class TestingStream {
   // The no_gc argument is only here because of the templated way this class
   // is used along with other implementations that require V8 heap access.
   Range<Char> GetDataAt(size_t pos, RuntimeCallStats* stats,
-                        DisallowHeapAllocation* no_gc = nullptr) {
-    return {&data_[Min(length_, pos)], &data_[length_]};
+                        DisallowGarbageCollection* no_gc = nullptr) {
+    return {&data_[std::min(length_, pos)], &data_[length_]};
   }
 
   static const bool kCanBeCloned = true;
@@ -175,10 +160,10 @@ class ChunkedStream {
   // The no_gc argument is only here because of the templated way this class
   // is used along with other implementations that require V8 heap access.
   Range<Char> GetDataAt(size_t pos, RuntimeCallStats* stats,
-                        DisallowHeapAllocation* no_gc = nullptr) {
+                        DisallowGarbageCollection* no_gc = nullptr) {
     Chunk chunk = FindChunk(pos, stats);
     size_t buffer_end = chunk.length;
-    size_t buffer_pos = Min(buffer_end, pos - chunk.position);
+    size_t buffer_pos = std::min(buffer_end, pos - chunk.position);
     return {&chunk.data[buffer_pos], &chunk.data[buffer_end]};
   }
 
@@ -271,7 +256,7 @@ class BufferedCharacterStream : public Utf16CharacterStream {
     buffer_start_ = &buffer_[0];
     buffer_cursor_ = buffer_start_;
 
-    DisallowHeapAllocation no_gc;
+    DisallowGarbageCollection no_gc;
     Range<uint8_t> range =
         byte_stream_.GetDataAt(position, runtime_call_stats(), &no_gc);
     if (range.length() == 0) {
@@ -279,8 +264,8 @@ class BufferedCharacterStream : public Utf16CharacterStream {
       return false;
     }
 
-    size_t length = Min(kBufferSize, range.length());
-    i::CopyCharsUnsigned(buffer_, range.start, length);
+    size_t length = std::min({kBufferSize, range.length()});
+    i::CopyChars(buffer_, range.start, length);
     buffer_end_ = &buffer_[length];
     return true;
   }
@@ -325,7 +310,7 @@ class UnbufferedCharacterStream : public Utf16CharacterStream {
   bool ReadBlock() final {
     size_t position = pos();
     buffer_pos_ = position;
-    DisallowHeapAllocation no_gc;
+    DisallowGarbageCollection no_gc;
     Range<uint16_t> range =
         byte_stream_.GetDataAt(position, runtime_call_stats(), &no_gc);
     buffer_start_ = range.start;
@@ -346,7 +331,7 @@ class UnbufferedCharacterStream : public Utf16CharacterStream {
 
 // Provides a unbuffered utf-16 view on the bytes from the underlying
 // ByteStream.
-class RelocatingCharacterStream
+class RelocatingCharacterStream final
     : public UnbufferedCharacterStream<OnHeapStream> {
  public:
   template <class... TArgs>
@@ -372,9 +357,9 @@ class RelocatingCharacterStream
   }
 
   void UpdateBufferPointers() {
-    DisallowHeapAllocation no_gc;
+    DisallowGarbageCollection no_gc;
     Range<uint16_t> range =
-        byte_stream_.GetDataAt(0, runtime_call_stats(), &no_gc);
+        byte_stream_.GetDataAt(buffer_pos_, runtime_call_stats(), &no_gc);
     if (range.start != buffer_start_) {
       buffer_cursor_ = (buffer_cursor_ - buffer_start_) + range.start;
       buffer_start_ = range.start;
@@ -431,20 +416,20 @@ bool BufferedUtf16CharacterStream::ReadBlock() {
 //
 // This implementation is fairly complex, since data arrives in chunks which
 // may 'cut' arbitrarily into utf-8 characters. Also, seeking to a given
-// character position is tricky because the byte position cannot be dericed
+// character position is tricky because the byte position cannot be derived
 // from the character position.
 //
 // TODO(verwaest): Decode utf8 chunks into utf16 chunks on the blink side
 // instead so we don't need to buffer.
 
-class Utf8ExternalStreamingStream : public BufferedUtf16CharacterStream {
+class Utf8ExternalStreamingStream final : public BufferedUtf16CharacterStream {
  public:
   Utf8ExternalStreamingStream(
       ScriptCompiler::ExternalSourceStream* source_stream)
       : current_({0, {0, 0, 0, unibrow::Utf8::State::kAccept}}),
         source_stream_(source_stream) {}
   ~Utf8ExternalStreamingStream() final {
-    for (size_t i = 0; i < chunks_.size(); i++) delete[] chunks_[i].data;
+    for (const Chunk& chunk : chunks_) delete[] chunk.data;
   }
 
   bool can_access_heap() const final { return false; }
@@ -605,7 +590,8 @@ void Utf8ExternalStreamingStream::FillBufferFromCurrentChunk() {
     }
   }
 
-  while (cursor < end && output_cursor + 1 < buffer_start_ + kBufferSize) {
+  const uint16_t* max_buffer_end = buffer_start_ + kBufferSize;
+  while (cursor < end && output_cursor + 1 < max_buffer_end) {
     unibrow::uchar t =
         unibrow::Utf8::ValueOfIncremental(&cursor, &state, &incomplete_char);
     if (V8_LIKELY(t <= unibrow::Utf16::kMaxNonSurrogateCharCode)) {
@@ -616,6 +602,15 @@ void Utf8ExternalStreamingStream::FillBufferFromCurrentChunk() {
       *(output_cursor++) = unibrow::Utf16::LeadSurrogate(t);
       *(output_cursor++) = unibrow::Utf16::TrailSurrogate(t);
     }
+    // Fast path for ascii sequences.
+    size_t remaining = end - cursor;
+    size_t max_buffer = max_buffer_end - output_cursor;
+    int max_length = static_cast<int>(std::min(remaining, max_buffer));
+    DCHECK_EQ(state, unibrow::Utf8::State::kAccept);
+    int ascii_length = NonAsciiStart(cursor, max_length);
+    CopyChars(output_cursor, cursor, ascii_length);
+    cursor += ascii_length;
+    output_cursor += ascii_length;
   }
 
   current_.pos.bytes = chunk.start.bytes + (cursor - chunk.data);
@@ -761,9 +756,9 @@ Utf16CharacterStream* ScannerStream::For(Isolate* isolate, Handle<String> data,
   size_t start_offset = 0;
   if (data->IsSlicedString()) {
     SlicedString string = SlicedString::cast(*data);
-    start_offset = string->offset();
-    String parent = string->parent();
-    if (parent->IsThinString()) parent = ThinString::cast(parent)->actual();
+    start_offset = string.offset();
+    String parent = string.parent();
+    if (parent.IsThinString()) parent = ThinString::cast(parent).actual();
     data = handle(parent, isolate);
   } else {
     data = String::Flatten(isolate, data);
@@ -797,10 +792,35 @@ std::unique_ptr<Utf16CharacterStream> ScannerStream::ForTesting(
 
 std::unique_ptr<Utf16CharacterStream> ScannerStream::ForTesting(
     const char* data, size_t length) {
+  if (data == nullptr) {
+    DCHECK_EQ(length, 0);
+
+    // We don't want to pass in a null pointer into the the character stream,
+    // because then the one-past-the-end pointer is undefined, so instead pass
+    // through this static array.
+    static const char non_null_empty_string[1] = {0};
+    data = non_null_empty_string;
+  }
+
   return std::unique_ptr<Utf16CharacterStream>(
       new BufferedCharacterStream<TestingStream>(
-          static_cast<size_t>(0), reinterpret_cast<const uint8_t*>(data),
-          static_cast<size_t>(length)));
+          0, reinterpret_cast<const uint8_t*>(data), length));
+}
+
+std::unique_ptr<Utf16CharacterStream> ScannerStream::ForTesting(
+    const uint16_t* data, size_t length) {
+  if (data == nullptr) {
+    DCHECK_EQ(length, 0);
+
+    // We don't want to pass in a null pointer into the the character stream,
+    // because then the one-past-the-end pointer is undefined, so instead pass
+    // through this static array.
+    static const uint16_t non_null_empty_uint16_t_string[1] = {0};
+    data = non_null_empty_uint16_t_string;
+  }
+
+  return std::unique_ptr<Utf16CharacterStream>(
+      new UnbufferedCharacterStream<TestingStream>(0, data, length));
 }
 
 Utf16CharacterStream* ScannerStream::For(

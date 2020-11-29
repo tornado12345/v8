@@ -6,56 +6,81 @@
 
 #include "include/libplatform/libplatform.h"
 #include "include/v8.h"
-#include "src/api-inl.h"
+#include "src/api/api-inl.h"
 #include "src/base/platform/time.h"
-#include "src/flags.h"
-#include "src/isolate.h"
-#include "src/objects-inl.h"
-#include "src/v8.h"
+#include "src/execution/isolate.h"
+#include "src/flags/flags.h"
+#include "src/init/v8.h"
+#include "src/objects/objects-inl.h"
 
 namespace v8 {
 
-IsolateWrapper::IsolateWrapper(bool enforce_pointer_compression)
+namespace {
+// counter_lookup_callback doesn't pass through any state information about
+// the current Isolate, so we have to store the current counter map somewhere.
+// Fortunately tests run serially, so we can just store it in a static global.
+CounterMap* kCurrentCounterMap = nullptr;
+}  // namespace
+
+IsolateWrapper::IsolateWrapper(CountersMode counters_mode)
     : array_buffer_allocator_(
           v8::ArrayBuffer::Allocator::NewDefaultAllocator()) {
+  CHECK_NULL(kCurrentCounterMap);
+
   v8::Isolate::CreateParams create_params;
-  create_params.array_buffer_allocator = array_buffer_allocator_;
-  if (enforce_pointer_compression) {
-    isolate_ = reinterpret_cast<v8::Isolate*>(
-        i::Isolate::New(i::IsolateAllocationMode::kInV8Heap));
-    v8::Isolate::Initialize(isolate_, create_params);
+  create_params.array_buffer_allocator = array_buffer_allocator_.get();
+
+  if (counters_mode == kEnableCounters) {
+    counter_map_ = std::make_unique<CounterMap>();
+    kCurrentCounterMap = counter_map_.get();
+
+    create_params.counter_lookup_callback = [](const char* name) {
+      CHECK_NOT_NULL(kCurrentCounterMap);
+      // If the name doesn't exist in the counter map, operator[] will default
+      // initialize it to zero.
+      return &(*kCurrentCounterMap)[name];
+    };
   } else {
-    isolate_ = v8::Isolate::New(create_params);
+    create_params.counter_lookup_callback = [](const char* name) -> int* {
+      return nullptr;
+    };
   }
-  CHECK_NOT_NULL(isolate_);
+
+  isolate_ = v8::Isolate::New(create_params);
+  CHECK_NOT_NULL(isolate());
 }
 
 IsolateWrapper::~IsolateWrapper() {
   v8::Platform* platform = internal::V8::GetCurrentPlatform();
   CHECK_NOT_NULL(platform);
-  while (platform::PumpMessageLoop(platform, isolate_)) continue;
+  while (platform::PumpMessageLoop(platform, isolate())) continue;
   isolate_->Dispose();
-  delete array_buffer_allocator_;
+  if (counter_map_) {
+    CHECK_EQ(kCurrentCounterMap, counter_map_.get());
+    kCurrentCounterMap = nullptr;
+  } else {
+    CHECK_NULL(kCurrentCounterMap);
+  }
 }
-
-// static
-v8::IsolateWrapper* SharedIsolateHolder::isolate_wrapper_ = nullptr;
 
 namespace internal {
 
-SaveFlags::SaveFlags() { non_default_flags_ = FlagList::argv(); }
+SaveFlags::SaveFlags() {
+  // For each flag, save the current flag value.
+#define FLAG_MODE_APPLY(ftype, ctype, nam, def, cmt) SAVED_##nam = FLAG_##nam;
+#include "src/flags/flag-definitions.h"  // NOLINT
+#undef FLAG_MODE_APPLY
+}
 
 SaveFlags::~SaveFlags() {
-  FlagList::ResetAllFlags();
-  int argc = static_cast<int>(non_default_flags_->size());
-  FlagList::SetFlagsFromCommandLine(
-      &argc, const_cast<char**>(non_default_flags_->data()),
-      false /* remove_flags */);
-  for (auto flag = non_default_flags_->begin();
-       flag != non_default_flags_->end(); ++flag) {
-    delete[] * flag;
+  // For each flag, set back the old flag value if it changed (don't write the
+  // flag if it didn't change, to keep TSAN happy).
+#define FLAG_MODE_APPLY(ftype, ctype, nam, def, cmt) \
+  if (SAVED_##nam != FLAG_##nam) {                   \
+    FLAG_##nam = SAVED_##nam;                        \
   }
-  delete non_default_flags_;
+#include "src/flags/flag-definitions.h"  // NOLINT
+#undef FLAG_MODE_APPLY
 }
 
 }  // namespace internal

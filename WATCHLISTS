@@ -33,15 +33,17 @@
 
 {
   'WATCHLIST_DEFINITIONS': {
-    'api': {
-      'filepath': 'include/' \
-                  '|src/api\.(cc|h)$',
-    },
     'snapshot': {
       'filepath': 'src/snapshot/',
     },
-    'debugger': {
-      'filepath': 'src/debug/',
+    'devtools': {
+      'filepath': 'src/debug/' \
+                  '|src/inspector/' \
+                  '|src/profiler/' \
+                  '|src/libsampler/' \
+                  '|src/tracing/' \
+                  '|include/js_protocol.pdl' \
+                  '|include/v8-inspector*\.h',
     },
     'interpreter': {
       'filepath': 'src/interpreter/' \
@@ -50,7 +52,7 @@
                   '|test/unittests/interpreter/',
     },
     'feature_shipping_status': {
-      'filepath': 'src/flag-definitions.h',
+      'filepath': 'src/flags/flag-definitions.h',
     },
     'gc_changes': {
       'filepath': 'src/heap/',
@@ -59,7 +61,7 @@
       'filepath': '/arm/',
     },
     'csa': {
-      'filepath': 'src/code-stub-assembler\.(cc|h)$' \
+      'filepath': 'src/codegen/code-stub-assembler\.(cc|h)$' \
                   '|src/builtins/.*-gen.(cc|h)$',
     },
     'ia32': {
@@ -67,9 +69,6 @@
     },
     'merges': {
       'filepath': '.',
-    },
-    'inspector': {
-      'filepath': 'inspector',
     },
     'wasm': {
       'filepath': 'src/wasm/' \
@@ -82,10 +81,6 @@
       'filepath': 'src/ast/' \
                   '|src/parsing/',
     },
-    'profiler': {
-      'filepath': 'src/profiler/' \
-                  '|src/libsampler/',
-    },
     'torque': {
       'filepath': '.*\.tq$',
     },
@@ -95,10 +90,6 @@
   },
 
   'WATCHLISTS': {
-    'api': [
-      'adamk+watch@chromium.org',
-      'yangguo+watch@chromium.org',
-    ],
     'csa': [
       'jgruber+watch@chromium.org',
     ],
@@ -107,11 +98,9 @@
     ],
     'snapshot': [
       'jgruber+watch@chromium.org',
-      'yangguo+watch@chromium.org',
     ],
-    'debugger': [
-      'jgruber+watch@chromium.org',
-      'yangguo+watch@chromium.org',
+    'devtools': [
+      'devtools-reviews+v8@chromium.org',
     ],
     'interpreter': [
       'rmcilroy@chromium.org',
@@ -130,9 +119,6 @@
       # Only enabled on branches created with tools/release/create_release.py
       # 'v8-merges@googlegroups.com',
     ],
-    'inspector': [
-      'devtools-reviews@chromium.org',
-    ],
     'wasm': [
       'wasm-v8@google.com',
     ],
@@ -140,11 +126,7 @@
       'jbroman+watch@chromium.org',
     ],
     'parser': [
-      'adamk+watch@chromium.org',
       'marja+watch@chromium.org',
-    ],
-    'profiler': [
-      'alph+watch@chromium.org',
     ],
     'tracing': [
       'alph+watch@chromium.org',

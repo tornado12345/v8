@@ -25,15 +25,15 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 #include "test/cctest/assembler-helper-arm.h"
 #include "test/cctest/cctest.h"
 
-#include "src/assembler-inl.h"
-#include "src/disassembler.h"
+#include "src/codegen/assembler-inl.h"
+#include "src/codegen/macro-assembler.h"
+#include "src/diagnostics/disassembler.h"
+#include "src/execution/simulator.h"
 #include "src/heap/factory.h"
-#include "src/macro-assembler.h"
-#include "src/simulator.h"
 
 namespace v8 {
 namespace internal {
@@ -198,11 +198,12 @@ void TestInvalidateExclusiveAccess(TestData initial_data, MemoryAccess access1,
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
 
-  auto f = AssembleCode<int(TestData*, int, int, int)>([&](Assembler& assm) {
-    AssembleLoadExcl(&assm, access1, r1, r1);
-    AssembleMemoryAccess(&assm, access2, r3, r2, r1);
-    AssembleStoreExcl(&assm, access3, r0, r3, r1);
-  });
+  auto f = AssembleCode<int(TestData*, int, int, int)>(
+      isolate, [&](Assembler& assm) {
+        AssembleLoadExcl(&assm, access1, r1, r1);
+        AssembleMemoryAccess(&assm, access2, r3, r2, r1);
+        AssembleStoreExcl(&assm, access3, r0, r3, r1);
+      });
 
   TestData t = initial_data;
 
@@ -266,9 +267,10 @@ namespace {
 int ExecuteMemoryAccess(Isolate* isolate, TestData* test_data,
                         MemoryAccess access) {
   HandleScope scope(isolate);
-  auto f = AssembleCode<int(TestData*, int, int)>([&](Assembler& assm) {
-    AssembleMemoryAccess(&assm, access, r0, r2, r1);
-  });
+  auto f =
+      AssembleCode<int(TestData*, int, int)>(isolate, [&](Assembler& assm) {
+        AssembleMemoryAccess(&assm, access, r0, r2, r1);
+      });
 
   return f.Call(test_data, 0, 0);
 }
@@ -352,7 +354,7 @@ TEST(simulator_invalidate_exclusive_access_threaded) {
   TestData test_data(1);
 
   MemoryAccessThread thread;
-  thread.Start();
+  CHECK(thread.Start());
 
   MemoryAccess ldrex_w(Kind::LoadExcl, Size::Word, offsetof(TestData, w));
   MemoryAccess strex_w(Kind::StoreExcl, Size::Word, offsetof(TestData, w), 7);

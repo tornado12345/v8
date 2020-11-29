@@ -11,8 +11,8 @@
 
 #include "include/v8.h"
 #include "src/heap/factory.h"
-#include "src/objects-inl.h"
-#include "src/regexp/jsregexp.h"
+#include "src/objects/objects-inl.h"
+#include "src/regexp/regexp.h"
 #include "test/fuzzer/fuzzer-support.h"
 
 // This is a hexdump of test/fuzzer/regexp_builtins/mjsunit.js generated using
@@ -61,17 +61,15 @@ enum RegExpBuiltin {
 REGEXP_BUILTINS(CASE)
 #undef CASE
 
-v8::Local<v8::String> v8_str(const char* s) {
-  return v8::String::NewFromUtf8(v8::Isolate::GetCurrent(), s,
-                                 v8::NewStringType::kNormal)
-      .ToLocalChecked();
+v8::Local<v8::String> v8_str(v8::Isolate* isolate, const char* s) {
+  return v8::String::NewFromUtf8(isolate, s).ToLocalChecked();
 }
 
 v8::MaybeLocal<v8::Value> CompileRun(v8::Local<v8::Context> context,
                                      const char* source) {
   v8::Local<v8::Script> script;
   v8::MaybeLocal<v8::Script> maybe_script =
-      v8::Script::Compile(context, v8_str(source));
+      v8::Script::Compile(context, v8_str(context->GetIsolate(), source));
 
   if (!maybe_script.ToLocal(&script)) return v8::MaybeLocal<v8::Value>();
   return script->Run(context);
@@ -242,9 +240,12 @@ std::string PickLimitForSplit(FuzzerArgs* args) {
 }
 
 std::string GenerateRandomFlags(FuzzerArgs* args) {
-  constexpr size_t kFlagCount = JSRegExp::FlagCount();
-  CHECK_EQ(JSRegExp::kDotAll, 1 << (kFlagCount - 1));
-  STATIC_ASSERT((1 << kFlagCount) - 1 < 0xFF);
+  // TODO(mbid,v8:10765): Find a way to generate the kLinear flag sometimes,
+  // but only for patterns that are supported by the experimental engine.
+  constexpr size_t kFlagCount = JSRegExp::kFlagCount;
+  CHECK_EQ(JSRegExp::kLinear, 1 << (kFlagCount - 1));
+  CHECK_EQ(JSRegExp::kDotAll, 1 << (kFlagCount - 2));
+  STATIC_ASSERT((1 << kFlagCount) - 1 <= 0xFF);
 
   const size_t flags = RandomByte(args) & ((1 << kFlagCount) - 1);
 
@@ -338,8 +339,14 @@ bool ResultsAreIdentical(FuzzerArgs* args) {
   std::string source =
       "assertEquals(fast.exception, slow.exception);\n"
       "assertEquals(fast.result, slow.result);\n"
-      "if (fast.result !== null)\n"
+      "if (fast.result !== null) {\n"
       "  assertEquals(fast.result.groups, slow.result.groups);\n"
+      "  assertEquals(fast.result.indices, slow.result.indices);\n"
+      "  if (fast.result.indices !== undefined) {\n"
+      "    assertEquals(fast.result.indices.groups,\n"
+      "                 slow.result.indices.groups);\n"
+      "  }\n"
+      "}\n"
       "assertEquals(fast.re.lastIndex, slow.re.lastIndex);\n";
 
   v8::Local<v8::Value> result;
@@ -371,11 +378,11 @@ void CompileRunAndVerify(FuzzerArgs* args, const std::string& source) {
   }
 
   if (!ResultsAreIdentical(args)) {
-    uint32_t hash = StringHasher::HashSequentialString(
+    uint32_t raw_hash_field = StringHasher::HashSequentialString(
         args->input_data, static_cast<int>(args->input_length),
         kRegExpBuiltinsFuzzerHashSeed);
-    V8_Fatal(__FILE__, __LINE__,
-             "!ResultAreIdentical(args); RegExpBuiltinsFuzzerHash=%x", hash);
+    FATAL("!ResultAreIdentical(args); RegExpBuiltinsFuzzerHash=%x",
+          raw_hash_field);
   }
 }
 

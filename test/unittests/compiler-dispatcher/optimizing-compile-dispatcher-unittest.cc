@@ -4,14 +4,16 @@
 
 #include "src/compiler-dispatcher/optimizing-compile-dispatcher.h"
 
-#include "src/api-inl.h"
+#include "src/api/api-inl.h"
 #include "src/base/atomic-utils.h"
 #include "src/base/platform/semaphore.h"
-#include "src/compiler.h"
-#include "src/handles.h"
-#include "src/isolate.h"
-#include "src/objects-inl.h"
-#include "src/optimized-compilation-info.h"
+#include "src/codegen/compiler.h"
+#include "src/codegen/optimized-compilation-info.h"
+#include "src/execution/isolate.h"
+#include "src/execution/local-isolate.h"
+#include "src/handles/handles.h"
+#include "src/heap/local-heap.h"
+#include "src/objects/objects-inl.h"
 #include "src/parsing/parse-info.h"
 #include "test/unittests/test-helpers.h"
 #include "test/unittests/test-utils.h"
@@ -20,22 +22,23 @@
 namespace v8 {
 namespace internal {
 
-typedef TestWithNativeContext OptimizingCompileDispatcherTest;
+using OptimizingCompileDispatcherTest = TestWithNativeContext;
 
 namespace {
 
 class BlockingCompilationJob : public OptimizedCompilationJob {
  public:
   BlockingCompilationJob(Isolate* isolate, Handle<JSFunction> function)
-      : OptimizedCompilationJob(isolate->stack_guard()->real_climit(), &info_,
-                                "BlockingCompilationJob",
+      : OptimizedCompilationJob(&info_, "BlockingCompilationJob",
                                 State::kReadyToExecute),
         shared_(function->shared(), isolate),
         zone_(isolate->allocator(), ZONE_NAME),
-        info_(&zone_, isolate, shared_, function),
+        info_(&zone_, isolate, shared_, function, CodeKind::TURBOFAN),
         blocking_(false),
         semaphore_(0) {}
   ~BlockingCompilationJob() override = default;
+  BlockingCompilationJob(const BlockingCompilationJob&) = delete;
+  BlockingCompilationJob& operator=(const BlockingCompilationJob&) = delete;
 
   bool IsBlocking() const { return blocking_.Value(); }
   void Signal() { semaphore_.Signal(); }
@@ -43,7 +46,8 @@ class BlockingCompilationJob : public OptimizedCompilationJob {
   // OptimiziedCompilationJob implementation.
   Status PrepareJobImpl(Isolate* isolate) override { UNREACHABLE(); }
 
-  Status ExecuteJobImpl() override {
+  Status ExecuteJobImpl(RuntimeCallStats* stats,
+                        LocalIsolate* local_isolate) override {
     blocking_.SetValue(true);
     semaphore_.Wait();
     blocking_.SetValue(false);
@@ -58,8 +62,6 @@ class BlockingCompilationJob : public OptimizedCompilationJob {
   OptimizedCompilationInfo info_;
   base::AtomicValue<bool> blocking_;
   base::Semaphore semaphore_;
-
-  DISALLOW_COPY_AND_ASSIGN(BlockingCompilationJob);
 };
 
 }  // namespace

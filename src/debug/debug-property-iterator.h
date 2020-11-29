@@ -6,9 +6,9 @@
 #define V8_DEBUG_DEBUG_PROPERTY_ITERATOR_H_
 
 #include "src/debug/debug-interface.h"
-#include "src/handles.h"
-#include "src/isolate.h"
-#include "src/prototype.h"
+#include "src/execution/isolate.h"
+#include "src/handles/handles.h"
+#include "src/objects/prototype.h"
 
 #include "include/v8.h"
 
@@ -21,6 +21,8 @@ class DebugPropertyIterator final : public debug::PropertyIterator {
  public:
   DebugPropertyIterator(Isolate* isolate, Handle<JSReceiver> receiver);
   ~DebugPropertyIterator() override = default;
+  DebugPropertyIterator(const DebugPropertyIterator&) = delete;
+  DebugPropertyIterator& operator=(const DebugPropertyIterator&) = delete;
 
   bool Done() const override;
   void Advance() override;
@@ -46,15 +48,13 @@ class DebugPropertyIterator final : public debug::PropertyIterator {
   enum Stage { kExoticIndices = 0, kEnumerableStrings = 1, kAllProperties = 2 };
   Stage stage_ = kExoticIndices;
 
-  uint32_t current_key_index_ = 0;
+  size_t current_key_index_ = 0;
   Handle<FixedArray> keys_;
-  uint32_t exotic_length_ = 0;
+  size_t exotic_length_ = 0;
 
   bool calculated_native_accessor_flags_ = false;
   int native_accessor_flags_ = 0;
   bool is_own_ = true;
-
-  DISALLOW_COPY_AND_ASSIGN(DebugPropertyIterator);
 };
 }  // namespace internal
 }  // namespace v8

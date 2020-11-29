@@ -6,8 +6,8 @@
 #define V8_COMPILER_SIMPLIFIED_OPERATOR_REDUCER_H_
 
 #include "src/base/compiler-specific.h"
+#include "src/common/globals.h"
 #include "src/compiler/graph-reducer.h"
-#include "src/globals.h"
 
 namespace v8 {
 namespace internal {
@@ -29,6 +29,9 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorReducer final
   SimplifiedOperatorReducer(Editor* editor, JSGraph* jsgraph,
                             JSHeapBroker* broker);
   ~SimplifiedOperatorReducer() final;
+  SimplifiedOperatorReducer(const SimplifiedOperatorReducer&) = delete;
+  SimplifiedOperatorReducer& operator=(const SimplifiedOperatorReducer&) =
+      delete;
 
   const char* reducer_name() const override {
     return "SimplifiedOperatorReducer";
@@ -37,8 +40,6 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorReducer final
   Reduction Reduce(Node* node) final;
 
  private:
-  Reduction ReduceReferenceEqual(Node* node);
-
   Reduction Change(Node* node, const Operator* op, Node* a);
   Reduction ReplaceBoolean(bool value);
   Reduction ReplaceFloat64(double value);
@@ -59,8 +60,6 @@ class V8_EXPORT_PRIVATE SimplifiedOperatorReducer final
 
   JSGraph* const jsgraph_;
   JSHeapBroker* const broker_;
-
-  DISALLOW_COPY_AND_ASSIGN(SimplifiedOperatorReducer);
 };
 
 }  // namespace compiler

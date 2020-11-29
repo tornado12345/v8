@@ -10,6 +10,9 @@ runner directly into this script or specify the results file with
 the -f option.
 '''
 
+# for py2/py3 compatibility
+from __future__ import print_function
+
 import csv
 import math
 from optparse import OptionParser
@@ -186,7 +189,7 @@ def ProcessResults(opts, results, baselines):
       PrintSeparator(opts, baselines, False)
 
 def ProcessFile(file_path):
-  file_reader = csv.reader(open(file_path, 'rb'), delimiter=',')
+  file_reader = csv.reader(open(file_path, 'r'), delimiter=',')
   benchmark_results = {}
   current_rows = []
   for row in file_reader:

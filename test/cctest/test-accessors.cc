@@ -27,11 +27,9 @@
 
 #include <stdlib.h>
 
-#include "src/v8.h"
-
-#include "src/api-inl.h"
-#include "src/frames-inl.h"
-#include "src/string-stream.h"
+#include "src/api/api-inl.h"
+#include "src/execution/frames-inl.h"
+#include "src/strings/string-stream.h"
 #include "test/cctest/cctest.h"
 
 using ::v8::ObjectTemplate;
@@ -149,8 +147,7 @@ THREADED_TEST(PropertyHandler) {
 static void GetIntValue(Local<String> property,
                         const v8::PropertyCallbackInfo<v8::Value>& info) {
   ApiTestFuzzer::Fuzz();
-  int* value =
-      static_cast<int*>(v8::Local<v8::External>::Cast(info.Data())->Value());
+  int* value = static_cast<int*>(info.Data().As<v8::External>()->Value());
   info.GetReturnValue().Set(v8_num(*value));
 }
 
@@ -158,8 +155,7 @@ static void GetIntValue(Local<String> property,
 static void SetIntValue(Local<String> property,
                         Local<Value> value,
                         const v8::PropertyCallbackInfo<void>& info) {
-  int* field =
-      static_cast<int*>(v8::Local<v8::External>::Cast(info.Data())->Value());
+  int* field = static_cast<int*>(info.Data().As<v8::External>()->Value());
   *field = value->Int32Value(info.GetIsolate()->GetCurrentContext()).FromJust();
 }
 
@@ -298,13 +294,10 @@ static void HandleAllocatingGetter(
     const v8::PropertyCallbackInfo<v8::Value>& info) {
   ApiTestFuzzer::Fuzz();
   for (int i = 0; i < C; i++) {
-    v8::String::NewFromUtf8(info.GetIsolate(), "foo",
-                            v8::NewStringType::kNormal)
-        .ToLocalChecked();
+    USE(v8::String::NewFromUtf8Literal(info.GetIsolate(), "foo"));
   }
-  info.GetReturnValue().Set(v8::String::NewFromUtf8(info.GetIsolate(), "foo",
-                                                    v8::NewStringType::kNormal)
-                                .ToLocalChecked());
+  info.GetReturnValue().Set(
+      v8::String::NewFromUtf8Literal(info.GetIsolate(), "foo"));
 }
 
 
@@ -539,8 +532,8 @@ static void StackCheck(Local<String> name,
     i::StackFrame* frame = iter.frame();
     CHECK(i != 0 || (frame->type() == i::StackFrame::EXIT));
     i::Code code = frame->LookupCode();
-    CHECK(code->IsCode());
-    CHECK(code->contains(frame->pc()));
+    CHECK(code.IsCode());
+    CHECK(code.contains(frame->pc()));
     iter.Advance();
   }
 }
@@ -801,7 +794,8 @@ TEST(PrototypeGetterAccessCheck) {
       "    x = obj.foo;"
       "  }"
       "  return x;"
-      "}");
+      "};"
+      "%PrepareFunctionForOptimization(f);");
 
   security_check_value = true;
   ExpectInt32("f()", 907);
@@ -883,4 +877,28 @@ TEST(ObjectSetLazyDataProperty) {
       });
   CHECK(result.FromJust());
   ExpectInt32("obj.bar = -1; obj.bar;", -1);
+}
+
+TEST(ObjectSetLazyDataPropertyForIndex) {
+  // Regression test for crbug.com/1136800 .
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope scope(isolate);
+  v8::Local<v8::Object> obj = v8::Object::New(isolate);
+  CHECK(env->Global()->Set(env.local(), v8_str("obj"), obj).FromJust());
+
+  static int getter_call_count;
+  getter_call_count = 0;
+  auto result = obj->SetLazyDataProperty(
+      env.local(), v8_str("1"),
+      [](Local<Name> name, const v8::PropertyCallbackInfo<v8::Value>& info) {
+        getter_call_count++;
+        info.GetReturnValue().Set(getter_call_count);
+      });
+  CHECK(result.FromJust());
+  CHECK_EQ(0, getter_call_count);
+  for (int i = 0; i < 2; i++) {
+    ExpectInt32("obj[1]", 1);
+    CHECK_EQ(1, getter_call_count);
+  }
 }
